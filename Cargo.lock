@@ -6234,7 +6234,7 @@ dependencies = [
 
 [[package]]
 name = "syphr-dl"
-version = "0.1.0-beta.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "gpui-kit",
  "reqwest",
