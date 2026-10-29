@@ -1,3 +1,13 @@
+// No console window behind the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+/// Cmd on macOS, Ctrl elsewhere. Spelled out rather than `secondary-` so Settings shows real keys.
+macro_rules! secondary {
+    ($key:literal) => {
+        if cfg!(target_os = "macos") { concat!("cmd-", $key) } else { concat!("ctrl-", $key) }
+    };
+}
+
 mod download;
 mod engine;
 mod tools;
@@ -98,24 +108,39 @@ impl Shortcut {
 
 // The "DataTable" ones only fire while the download list has focus, so they never eat typing in a field.
 pub const SHORTCUTS: &[Shortcut] = &[
-    Shortcut { label: "New download", default: "cmd-n", context: None, action: || Box::new(NewDownload) },
-    Shortcut { label: "Search", default: "cmd-f", context: None, action: || Box::new(FocusSearch) },
-    Shortcut { label: "Settings", default: "cmd-,", context: None, action: || Box::new(OpenSettings) },
-    Shortcut { label: "Close window", default: "cmd-w", context: None, action: || Box::new(CloseWindow) },
-    Shortcut { label: "Minimize", default: "cmd-m", context: None, action: || Box::new(Minimize) },
+    Shortcut { label: "New download", default: secondary!("n"), context: None, action: || Box::new(NewDownload) },
+    Shortcut { label: "Search", default: secondary!("f"), context: None, action: || Box::new(FocusSearch) },
+    Shortcut { label: "Settings", default: secondary!(","), context: None, action: || Box::new(OpenSettings) },
+    Shortcut { label: "Close window", default: secondary!("w"), context: None, action: || Box::new(CloseWindow) },
+    Shortcut { label: "Minimize", default: secondary!("m"), context: None, action: || Box::new(Minimize) },
     Shortcut { label: "Hide Syphr", default: "cmd-h", context: None, action: || Box::new(Hide) },
     Shortcut { label: "Hide others", default: "alt-cmd-h", context: None, action: || Box::new(HideOthers) },
-    Shortcut { label: "Quit", default: "cmd-q", context: None, action: || Box::new(Quit) },
+    Shortcut { label: "Quit", default: secondary!("q"), context: None, action: || Box::new(Quit) },
     Shortcut {
         label: "Pause or resume",
         default: "space",
         context: Some("DataTable"),
         action: || Box::new(TogglePause),
     },
-    Shortcut { label: "Retry failed", default: "cmd-r", context: Some("DataTable"), action: || Box::new(Retry) },
-    Shortcut { label: "Copy links", default: "cmd-c", context: Some("DataTable"), action: || Box::new(CopyLinks) },
+    Shortcut {
+        label: "Retry failed",
+        default: secondary!("r"),
+        context: Some("DataTable"),
+        action: || Box::new(Retry),
+    },
+    Shortcut {
+        label: "Copy links",
+        default: secondary!("c"),
+        context: Some("DataTable"),
+        action: || Box::new(CopyLinks),
+    },
     Shortcut { label: "Remove", default: "backspace, delete", context: Some("DataTable"), action: || Box::new(Remove) },
-    Shortcut { label: "Select all", default: "cmd-a", context: Some("DataTable"), action: || Box::new(SelectAll) },
+    Shortcut {
+        label: "Select all",
+        default: secondary!("a"),
+        context: Some("DataTable"),
+        action: || Box::new(SelectAll),
+    },
     // Overrides the table's own Cancel, which only clears its keyboard cursor.
     Shortcut {
         label: "Clear selection",

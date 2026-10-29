@@ -69,10 +69,14 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Keeps a server-supplied name from escaping the folder or hiding the file.
+/// Keeps a server-supplied name from escaping the folder or hiding the file, and valid on Windows.
 pub(super) fn sanitize(name: &str) -> String {
-    let cleaned: String =
-        name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() { '_' } else { c }).collect();
+    let bad = |c: char| {
+        matches!(c, '/' | '\\' | ':' | '\0')
+            || c.is_control()
+            || (cfg!(windows) && matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+    };
+    let cleaned: String = name.chars().map(|c| if bad(c) { '_' } else { c }).collect();
     cleaned.trim().trim_start_matches('.').trim().to_string()
 }
 

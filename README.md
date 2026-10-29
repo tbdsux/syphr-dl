@@ -20,7 +20,7 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 | --- | --- |
 | macOS 15+ | Prebuilt DMG (Apple Silicon and Intel) |
 | Linux | Build from source |
-| Windows | Not supported yet |
+| Windows 10+ | Prebuilt zip (x64) |
 
 ### macOS
 
@@ -38,7 +38,7 @@ Syphr offers to install yt-dlp and ffmpeg for you the first time you add a video
 
 There are no prebuilt Linux packages yet. Build from source (see [Linux build requirements](#linux-1)), then run `target/release/syphr-dl`.
 
-Install yt-dlp and ffmpeg with your package manager. Syphr's built-in tool installer only downloads macOS builds.
+Install yt-dlp and ffmpeg with your package manager. Syphr's built-in tool installer only downloads macOS and Windows builds.
 
 ```bash
 sudo apt install yt-dlp ffmpeg
@@ -48,7 +48,11 @@ Distro packages of yt-dlp often lag behind, and sites break old versions. If vid
 
 ### Windows
 
-Not supported yet. The download engine uses Unix-only file APIs, so Syphr doesn't build on Windows today.
+Download `Syphr-vX.Y.Z-windows-x64.zip` from [Releases](../../releases), unzip it, and run `syphr-dl.exe`.
+
+Releases aren't code-signed yet, so SmartScreen may warn on first launch. Choose **More info**, then **Run anyway**.
+
+Syphr offers to install yt-dlp and ffmpeg for you the first time you add a video link.
 
 ## Build from source
 
@@ -65,6 +69,10 @@ Xcode Command Line Tools:
 ```bash
 xcode-select --install
 ```
+
+### Windows
+
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload.
 
 ### Linux
 

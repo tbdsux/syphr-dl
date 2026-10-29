@@ -12,7 +12,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/tools.rs` | Finds and installs yt-dlp and ffmpeg. See [tools.md](tools.md) |
 | `src/ui/app/mod.rs` | `SyphrApp`: the list, selection, filters, and the `pump` that drives jobs |
 | `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, details card, bulk bar, status bar |
-| `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘-click, Shift-click) |
+| `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/downloads_table.rs` | The downloads table (columns, row rendering) |
 | `src/ui/settings.rs` | `AppSettings`, the settings window, themes and appearance |
@@ -23,7 +23,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Adding a download
 
-1. The link field (⌘N) opens in the title bar. With *auto paste* on, a copied link is filled in.
+1. The link field (⌘N, Ctrl+N on Windows and Linux) opens in the title bar. With *auto paste* on, a copied link is filled in.
 2. After typing settles for 400 ms, the link is looked up:
    - **Media sites** (`ytdlp::handles`: YouTube, Vimeo, Twitch, SoundCloud, Dailymotion, X) run `yt-dlp -J`. The format list becomes a few choices: *Best quality*, one per resolution, and *Audio only*.
    - **Everything else** gets a one-byte ranged GET (`engine::inspect`) that reports the file name, size, and whether the server supports byte ranges.
@@ -66,7 +66,7 @@ Closing the window while anything is downloading or queued asks first.
 
 ## Settings
 
-Stored as JSON at `~/Library/Application Support/Syphr/settings.json`. An unreadable file is ignored (and logged) and defaults are used.
+Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Support/Syphr` on macOS, `%APPDATA%\Syphr` on Windows, `$XDG_CONFIG_HOME/Syphr` (or `~/.config/Syphr`) on Linux. An unreadable file is ignored (and logged) and defaults are used.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -84,4 +84,5 @@ Stored as JSON at `~/Library/Application Support/Syphr/settings.json`. An unread
 ## Limits
 
 - The download list lives in memory only; it's empty after a restart. Partial files stay on disk.
-- Some pieces are still macOS-specific: `open -R` (Show in Finder), `ditto`, `shasum`, and the bundled ffmpeg builds. Releases are built for macOS today.
+- The tool installer only has macOS and Windows builds; on Linux, install yt-dlp and ffmpeg yourself.
+- On Linux, *Show in folder* opens the folder without selecting the file.

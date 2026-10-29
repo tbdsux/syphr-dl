@@ -117,7 +117,7 @@ The staging folder exists because yt-dlp skips a file that already exists instea
 
 1. **Server name:** `Content-Disposition` (`filename*=UTF-8''…` wins over `filename=`), else the last URL path segment after redirects (percent-decoded), else `download`. With no extension, one is guessed from `Content-Type`.
 2. **Typed name** wins. If it has no extension, the server's is added (`notes` + `report.pdf` → `notes.pdf`).
-3. **Sanitized:** `/ \ : NUL` and control characters become `_`, leading dots are removed, so a name can't escape the folder or hide the file.
+3. **Sanitized:** `/ \ : NUL` and control characters (plus `< > " | ? *` on Windows) become `_`, leading dots are removed, so a name can't escape the folder or hide the file.
 4. **Unique:** `name.zip`, then `name (1).zip`, `name (2).zip`, … skipping names where the file *or* its `.part` exists.
 
 ## Errors

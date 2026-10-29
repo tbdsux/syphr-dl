@@ -230,7 +230,7 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
     .args(["--print", "after_move:filepath", "-o", &template, "-P"])
     .arg(&staging);
     // A bare command name is found on PATH by yt-dlp itself.
-    if request.ffmpeg_bin.contains('/') {
+    if request.ffmpeg_bin.contains(std::path::is_separator) {
         cmd.arg("--ffmpeg-location").arg(&request.ffmpeg_bin);
     }
     if request.limit_bps > 0 {

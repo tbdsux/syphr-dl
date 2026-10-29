@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::fs::FileExt,
+    io,
     path::PathBuf,
     sync::{
         Arc,
@@ -159,7 +159,7 @@ async fn fetch_part(url: &str, file: &File, layout: &Layout, i: usize, limit: u6
         let done = part.done.load(Relaxed);
         let room = part.len() - done;
         let chunk = &chunk[..(chunk.len() as u64).min(room) as usize];
-        file.write_all_at(chunk, part.start + done).map_err(err)?;
+        write_at(file, chunk, part.start + done).map_err(err)?;
         part.done.fetch_add(chunk.len() as u64, Relaxed);
         got += chunk.len() as u64;
         if limit > 0 {
@@ -175,6 +175,24 @@ async fn fetch_part(url: &str, file: &File, layout: &Layout, i: usize, limit: u6
     // An unknown size ends when the server closes; a known one must be complete.
     if part.end != u64::MAX && part.done.load(Relaxed) < part.len() {
         return Err("The connection closed before the part finished.".into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+/// `seek_write` may write less than asked, so loop like `write_all_at` does.
+#[cfg(windows)]
+fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_write(buf, offset)? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            n => (buf, offset) = (&buf[n..], offset + n as u64),
+        }
     }
     Ok(())
 }

@@ -1,10 +1,10 @@
 # CI and releases
 
-Two GitHub Actions workflows, both on `macos-latest`.
+Two GitHub Actions workflows, on `macos-latest` and `windows-latest`.
 
 ## Test — `.github/workflows/test.yml`
 
-Runs on every push to `main` and every pull request:
+Runs on every push to `main` and every pull request, on both macOS and Windows:
 
 ```bash
 cargo fmt --check
@@ -24,6 +24,7 @@ Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https:
 4. Signs it ad hoc and verifies the signature.
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
 6. Publishes a GitHub release with the DMG and generated notes.
+7. A Windows job then builds `syphr-dl.exe` and uploads `Syphr-vX.Y.Z-windows-x64.zip` to the same release.
 
 ## Cutting a release
 
@@ -44,3 +45,5 @@ Releases are signed ad hoc, so macOS warns on first launch. To ship signed, nota
 3. Submit the DMG with `xcrun notarytool submit … --wait`, check it's *Accepted*, then `xcrun stapler staple`.
 
 The step to replace is marked with a `shortcut:` comment.
+
+Windows builds are unsigned, so SmartScreen warns on first launch. Signing needs a code-signing certificate and a `signtool sign` step after the build (also marked with a `shortcut:` comment).

@@ -42,7 +42,7 @@ impl SyphrApp {
             .small()
             .prefix(IconName::Globe)
             .when(empty, |this| {
-                this.suffix(Kbd::new(Keystroke::parse("cmd-n").expect("valid keystroke")).appearance(false))
+                this.suffix(Kbd::new(Keystroke::parse(secondary!("n")).expect("valid keystroke")).appearance(false))
             })
             .cleanable(true)
             .w(px(440.));

@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  macos:
     runs-on: macos-latest
     env:
       VERSION: ${{ github.ref_name }}
@@ -69,3 +69,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$VERSION" "dist/Syphr-$VERSION.dmg" --title "Syphr $VERSION" --generate-notes
+
+  # Runs after macOS so the release already exists; the tag check there gates both.
+  windows:
+    needs: macos
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # shortcut: unsigned zip, so SmartScreen warns on first open; add an installer and code signing when there's a certificate.
+      - name: Build and zip
+        shell: pwsh
+        run: |
+          cargo build --release --locked
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/syphr-dl.exe -DestinationPath "dist/Syphr-$env:VERSION-windows-x64.zip"
+
+      - name: Upload to GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$VERSION" "dist/Syphr-$VERSION-windows-x64.zip"

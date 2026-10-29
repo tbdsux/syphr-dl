@@ -2,8 +2,8 @@
 //! A user's own install wins; Syphr's yt-dlp keeps itself current with `-U`, since sites break old versions.
 
 use std::{
+    env::consts::EXE_SUFFIX,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -13,14 +13,16 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
 };
 use gpui_kit::*;
+use sha2::{Digest, Sha256};
 
 use crate::engine::{CLIENT, RUNTIME};
 use crate::ui::settings::AppSettings;
 
-const YTDLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+const YTDLP_ASSET: &str = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp_macos" };
 const YTDLP_SUMS: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
 
 /// Pinned builds with their SHA-256, so a changed file on the mirror is rejected. Bump these together.
+#[cfg(not(windows))]
 const FFMPEG_ARM64: [(&str, &str, &str); 2] = [
     (
         "ffmpeg",
@@ -33,6 +35,7 @@ const FFMPEG_ARM64: [(&str, &str, &str); 2] = [
         "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
     ),
 ];
+#[cfg(not(windows))]
 const FFMPEG_X86_64: [(&str, &str, &str); 2] = [
     (
         "ffmpeg",
@@ -45,22 +48,31 @@ const FFMPEG_X86_64: [(&str, &str, &str); 2] = [
         "2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd",
     ),
 ];
+/// gyan.dev's essentials build (x64; Windows on Arm runs it emulated), with ffmpeg.exe and ffprobe.exe under `bin/`.
+#[cfg(windows)]
+const FFMPEG_WINDOWS: (&str, &str, &str) = (
+    "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+    "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "ffmpeg-9.0.2-essentials_build/bin",
+);
 
 pub fn bin_dir() -> PathBuf {
-    crate::ui::settings::home().join("Library/Application Support/Syphr/bin")
+    crate::ui::settings::data_dir().join("bin")
 }
 
 /// A full path is used as is. A bare name is searched on PATH, then in Homebrew's folders
 /// (apps opened from Finder don't get the shell's PATH), then in Syphr's own folder.
+/// On Windows a bare name also matches its `.exe`.
 pub fn find(bin: &str) -> Option<PathBuf> {
-    if bin.contains('/') {
+    if bin.contains(std::path::is_separator) {
         return Some(PathBuf::from(bin)).filter(|p| p.is_file());
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
+    let homebrew: &[&str] = if cfg!(windows) { &[] } else { &["/opt/homebrew/bin", "/usr/local/bin"] };
     std::env::split_paths(&path)
-        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .chain(homebrew.iter().map(PathBuf::from))
         .chain([bin_dir()])
-        .map(|dir| dir.join(bin))
+        .flat_map(|dir| [dir.join(bin), dir.join(format!("{bin}{EXE_SUFFIX}"))])
         .find(|p| p.is_file())
 }
 
@@ -157,18 +169,21 @@ async fn install_ytdlp(dir: PathBuf) -> Result<PathBuf, String> {
     let sums = String::from_utf8_lossy(&fetch(YTDLP_SUMS).await?).into_owned();
     let expected = sums
         .lines()
-        .find_map(|l| l.strip_suffix("  yt-dlp_macos"))
-        .ok_or("yt-dlp's checksum list has no macOS entry")?
+        .find_map(|l| l.strip_suffix(&format!("  {YTDLP_ASSET}")))
+        .ok_or(format!("yt-dlp's checksum list has no {YTDLP_ASSET} entry"))?
         .to_string();
+    let url = format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{YTDLP_ASSET}");
+    let bytes = fetch(&url).await?;
+    verify(&bytes, &expected, "yt-dlp")?;
     let tmp = dir.join("yt-dlp.download");
-    fs::write(&tmp, fetch(YTDLP_URL).await?).map_err(|e| e.to_string())?;
-    verify(&tmp, &expected)?;
-    let path = dir.join("yt-dlp");
+    fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("yt-dlp{EXE_SUFFIX}"));
     make_executable(&tmp)?;
     fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
+#[cfg(not(windows))]
 async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     let builds = match std::env::consts::ARCH {
         "aarch64" => FFMPEG_ARM64,
@@ -176,9 +191,10 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
         arch => return Err(format!("no ffmpeg build for {arch}")),
     };
     for (name, url, sha) in builds {
+        let bytes = fetch(url).await?;
+        verify(&bytes, sha, name)?;
         let zip = dir.join(format!("{name}.zip"));
-        fs::write(&zip, fetch(url).await?).map_err(|e| e.to_string())?;
-        verify(&zip, sha)?;
+        fs::write(&zip, bytes).map_err(|e| e.to_string())?;
         // `ditto` ships with macOS and unzips without adding a dependency.
         let ok =
             Command::new("/usr/bin/ditto").arg("-x").arg("-k").arg(&zip).arg(&dir).status().is_ok_and(|s| s.success());
@@ -191,51 +207,74 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     Ok(dir.join("ffmpeg"))
 }
 
+#[cfg(windows)]
+async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
+    let (url, sha, inner) = FFMPEG_WINDOWS;
+    let bytes = fetch(url).await?;
+    verify(&bytes, sha, "ffmpeg")?;
+    let zip = dir.join("ffmpeg.zip");
+    fs::write(&zip, bytes).map_err(|e| e.to_string())?;
+    // Windows 10+ ships bsdtar, which reads zips; only the two programs are pulled out.
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let ok = Command::new(Path::new(&root).join("System32").join("tar.exe"))
+        .args(["--strip-components", "2", "-xf"])
+        .arg(&zip)
+        .arg("-C")
+        .arg(&dir)
+        .args([format!("{inner}/ffmpeg.exe"), format!("{inner}/ffprobe.exe")])
+        .status()
+        .is_ok_and(|s| s.success());
+    fs::remove_file(&zip).ok();
+    if !ok {
+        return Err("couldn't unpack ffmpeg".into());
+    }
+    Ok(dir.join("ffmpeg.exe"))
+}
+
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let resp = CLIENT.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
     Ok(resp.bytes().await.map_err(|e| e.to_string())?.to_vec())
 }
 
-/// Deletes the file when its SHA-256 doesn't match, so a bad download is never run.
-fn verify(path: &Path, expected: &str) -> Result<(), String> {
-    let out = Command::new("/usr/bin/shasum").args(["-a", "256"]).arg(path).output().map_err(|e| e.to_string())?;
-    let actual = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string();
-    if out.status.success() && actual.eq_ignore_ascii_case(expected.trim()) {
-        return Ok(());
-    }
-    fs::remove_file(path).ok();
-    Err(format!("{} failed its checksum check", path.file_name().unwrap_or_default().to_string_lossy()))
+/// Checked before anything is written, so a bad download never reaches the disk.
+fn verify(bytes: &[u8], expected: &str, name: &str) -> Result<(), String> {
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected.trim()) { Ok(()) } else { Err(format!("{name} failed its checksum check")) }
 }
 
+#[cfg(unix)]
 fn make_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn make_executable(_: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
-
     use super::{find, resolve, verify};
 
     #[test]
     fn finds_full_paths_and_names() {
-        assert_eq!(find("/bin/sh"), Some(PathBuf::from("/bin/sh")));
+        #[cfg(unix)]
+        {
+            assert_eq!(find("/bin/sh"), Some(std::path::PathBuf::from("/bin/sh")));
+            assert!(find("sh").is_some());
+        }
+        #[cfg(windows)]
+        assert!(find("cmd").is_some_and(|p| p.ends_with("cmd.exe")));
         assert_eq!(find("/no/such/tool"), None);
-        assert!(find("sh").is_some());
         assert_eq!(find("no-such-tool-syphr"), None);
         assert_eq!(resolve("no-such-tool-syphr"), "no-such-tool-syphr");
     }
 
     #[test]
     fn rejects_wrong_checksum() {
-        let dir = std::env::temp_dir().join(format!("syphr-sum-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("x");
-        fs::write(&file, b"hello").unwrap();
-        verify(&file, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824").unwrap();
-        assert!(verify(&file, &"0".repeat(64)).is_err());
-        assert!(!file.exists());
-        fs::remove_dir_all(&dir).unwrap();
+        verify(b"hello", "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824", "x").unwrap();
+        assert!(verify(b"hello", &"0".repeat(64), "x").is_err());
     }
 }
 
@@ -253,7 +292,11 @@ mod live {
         std::fs::create_dir_all(&dir).unwrap();
         let ytdlp = RUNTIME.block_on(install_ytdlp(dir.clone())).unwrap();
         let ffmpeg = RUNTIME.block_on(install_ffmpeg(dir.clone())).unwrap();
-        for (bin, flag) in [(&ytdlp, "--version"), (&ffmpeg, "-version"), (&dir.join("ffprobe"), "-version")] {
+        for (bin, flag) in [
+            (&ytdlp, "--version"),
+            (&ffmpeg, "-version"),
+            (&dir.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX)), "-version"),
+        ] {
             assert!(Command::new(bin).arg(flag).status().unwrap().success(), "{}", bin.display());
         }
         let mut job = Job::default();

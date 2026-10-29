@@ -60,7 +60,8 @@ pub(crate) fn home() -> PathBuf {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default()
 }
 
-fn settings_path() -> PathBuf {
+/// Syphr's own folder: settings, and the tools it installs.
+pub(crate) fn data_dir() -> PathBuf {
     let base = if cfg!(target_os = "macos") {
         home().join("Library/Application Support")
     } else if cfg!(target_os = "windows") {
@@ -68,7 +69,11 @@ fn settings_path() -> PathBuf {
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
     };
-    base.join("Syphr").join("settings.json")
+    base.join("Syphr")
+}
+
+fn settings_path() -> PathBuf {
+    data_dir().join("settings.json")
 }
 
 impl AppSettings {

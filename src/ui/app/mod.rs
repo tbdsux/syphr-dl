@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -271,10 +271,9 @@ impl SyphrApp {
     pub fn run_step(&mut self, id: u64, next: Option<Status>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(next) = next else {
             let path = self.downloads.iter().find(|d| d.id == id).and_then(|d| d.path.clone());
-            // shortcut: `open -R` is macOS only; add explorer/xdg-open if Syphr ships elsewhere.
             match path.filter(|p| p.exists()) {
                 Some(path) => {
-                    if let Err(e) = std::process::Command::new("open").arg("-R").arg(path).spawn() {
+                    if let Err(e) = reveal(&path) {
                         window.push_notification(format!("Couldn't show the file: {e}"), cx);
                     }
                 }
@@ -435,6 +434,24 @@ pub fn allow_close(active: bool, window: &mut Window, cx: &mut App) -> bool {
     } else {
         true
     }
+}
+
+/// Shows `path` selected in the system file manager.
+#[cfg(not(windows))]
+fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
+    if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(path).spawn()
+    } else {
+        // shortcut: opens the folder without selecting the file; use the FileManager1 D-Bus call if that matters.
+        std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn()
+    }
+}
+
+#[cfg(windows)]
+fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    // Explorer wants the quotes after the comma, which Rust's own argument quoting won't produce.
+    std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn()
 }
 
 fn expand_home(folder: &str) -> PathBuf {
