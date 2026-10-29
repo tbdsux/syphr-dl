@@ -18,13 +18,13 @@ Network tests (`#[ignore]`) don't run in CI.
 
 Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https://gpui-kit.com/docs/packaging/):
 
-1. Fails if the tag doesn't match `version` in `Cargo.toml`.
+1. Fails if the tag doesn't match `version` in `Cargo.toml`. The macOS and Windows builds then run in parallel.
 2. Builds `aarch64-apple-darwin` and `x86_64-apple-darwin` and joins them into one universal binary with `lipo`.
 3. Assembles `Syphr.app` with an `Info.plist` (identifier `dev.tbdsux.syphr-dl`, version from the tag, build number from the run number).
 4. Signs it ad hoc and verifies the signature.
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
-6. Publishes a GitHub release with the DMG and generated notes.
-7. A Windows job then builds `syphr-dl.exe` and uploads `Syphr-vX.Y.Z-windows-x64.zip` to the same release.
+6. Alongside, a Windows job builds `syphr-dl.exe` and zips it as `Syphr-vX.Y.Z-windows-x64.zip`.
+7. Once both builds pass, publishes a GitHub release with the DMG, the zip, and generated notes.
 
 ## Cutting a release
 

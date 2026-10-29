@@ -7,22 +7,29 @@ on:
 permissions:
   contents: write
 
+env:
+  VERSION: ${{ github.ref_name }}
+
+# The two builds run in parallel; publish waits for both, so a release never goes out half-built.
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag matches Cargo.toml
+        run: |
+          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          [ "v$crate" = "$VERSION" ] || { echo "Tag $VERSION doesn't match Cargo.toml version $crate"; exit 1; }
+
   macos:
+    needs: check
     runs-on: macos-latest
-    env:
-      VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-
-      - name: Check tag matches Cargo.toml
-        run: |
-          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          [ "v$crate" = "$VERSION" ] || { echo "Tag $VERSION doesn't match Cargo.toml version $crate"; exit 1; }
 
       - name: Build universal binary
         run: |
@@ -67,19 +74,14 @@ jobs:
           ln -s /Applications dist/dmg-root/Applications
           hdiutil create -volname Syphr -srcfolder dist/dmg-root -ov -format UDZO "dist/Syphr-$VERSION.dmg"
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          flags=(); [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
-          gh release create "$VERSION" "dist/Syphr-$VERSION.dmg" --title "Syphr $VERSION" --generate-notes "${flags[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Syphr-${{ env.VERSION }}.dmg
 
-  # Runs after macOS so the release already exists; the tag check there gates both.
   windows:
-    needs: macos
+    needs: check
     runs-on: windows-latest
-    env:
-      VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -93,8 +95,22 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target/release/syphr-dl.exe -DestinationPath "dist/Syphr-$env:VERSION-windows-x64.zip"
 
-      - name: Upload to GitHub release
-        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Syphr-${{ env.VERSION }}-windows-x64.zip
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$VERSION" "dist/Syphr-$VERSION-windows-x64.zip"
+        run: |
+          flags=(); [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          gh release create "$VERSION" dist/* --repo "${{ github.repository }}" --title "Syphr $VERSION" --generate-notes "${flags[@]}"
