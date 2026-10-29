@@ -93,7 +93,14 @@ impl SyphrApp {
             SidebarMenuItem::new(label)
                 .icon(icon)
                 .active(self.filter == filter)
-                .suffix(move |_, cx| div().text_xs().text_color(cx.theme().muted_foreground).child(count.to_string()))
+                .suffix(move |_, cx| {
+                    // Tabular digits so counts line up down the column.
+                    div()
+                        .text_xs()
+                        .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(count.to_string())
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.filter = filter;
                     this.sync_table(cx);
