@@ -14,6 +14,8 @@ use crate::download::format_bytes;
 
 pub const FONT_FAMILY: &str = "Geist";
 pub const SYSTEM_THEME: &str = "System";
+/// Smallest and largest base text size in points; everything else scales with it.
+pub const TEXT_SIZES: (f64, f64) = (11., 20.);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -111,6 +113,16 @@ impl AppSettings {
             eprintln!("Couldn't save settings to {}: {err}", settings_path().display());
         }
         apply_appearance(cx);
+    }
+
+    /// Steps the base text size by `delta` points, or back to the default for `None`.
+    pub fn step_font_size(cx: &mut App, delta: Option<f64>) {
+        Self::update(cx, |s| {
+            s.font_size = match delta {
+                Some(d) => (s.font_size + d).clamp(TEXT_SIZES.0, TEXT_SIZES.1),
+                None => Self::default().font_size,
+            }
+        });
     }
 }
 
@@ -225,14 +237,24 @@ impl Render for SettingsView {
                     .description("Colors for every Syphr window."),
                     SettingItem::new(
                         "Text size",
-                        SettingField::number_input(
-                            number(11., 18., 1.),
-                            |cx: &App| AppSettings::get(cx).font_size,
-                            |value: f64, cx: &mut App| AppSettings::update(cx, |s| s.font_size = value),
+                        // A dropdown, not a number field: a focused input inside the settings list re-requests
+                        // autoscroll as the layout grows, and gpui then prepaints it twice in one frame.
+                        SettingField::scrollable_dropdown(
+                            (TEXT_SIZES.0 as u32..=TEXT_SIZES.1 as u32)
+                                .map(|pt| (pt.to_string().into(), format!("{pt} pt").into()))
+                                .collect(),
+                            |cx: &App| AppSettings::get(cx).font_size.to_string().into(),
+                            |value: SharedString, cx: &mut App| {
+                                if let Ok(pt) = value.parse() {
+                                    AppSettings::update(cx, |s| s.font_size = pt)
+                                }
+                            },
                         )
-                        .default_value(defaults.font_size),
+                        .default_value(SharedString::from(defaults.font_size.to_string())),
                     )
-                    .description("Base size in points. Geist Sans is used throughout."),
+                    .description(
+                        "Base size in points; spacing and controls scale with it. The View menu changes it too.",
+                    ),
                 ]),
             );
 

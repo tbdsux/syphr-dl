@@ -34,6 +34,20 @@ enum Filter {
 }
 
 impl Filter {
+    fn title(self) -> &'static str {
+        match self {
+            Filter::All => "All downloads",
+            Filter::Active => "Active",
+            Filter::Completed => "Completed",
+            Filter::Failed => "Failed",
+            Filter::Kind(Kind::Video) => "Video",
+            Filter::Kind(Kind::Music) => "Music",
+            Filter::Kind(Kind::Document) => "Documents",
+            Filter::Kind(Kind::Program) => "Programs",
+            Filter::Kind(Kind::Archive) => "Archives",
+        }
+    }
+
     fn matches(self, d: &Download) -> bool {
         match self {
             Filter::All => true,
@@ -149,9 +163,9 @@ impl SyphrApp {
             .cloned()
             .collect();
         let empty = if self.downloads.is_empty() {
-            ("No downloads yet", "Add a file link or a YouTube URL to get started.")
+            ("No downloads yet", "Paste a file link or a video page URL to start.", true)
         } else {
-            ("Nothing here", "Try another category or clear the search.")
+            ("Nothing here", "Try another category or clear the search.", false)
         };
         // Selection only covers what is on screen, so hidden rows are never acted on by accident.
         self.checked.retain(|id| rows.iter().any(|d| d.id == *id));

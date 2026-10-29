@@ -332,7 +332,7 @@ impl Render for AddDownload {
         let hint = (!is_web_link(&url)).then_some("Links start with http:// or https://");
         let lookup = self.render_lookup(cx);
         v_flex()
-            .w(px(440.))
+            .w(rems(34.))
             .gap_3()
             .when_some(hint, |this, hint| {
                 this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(hint))

@@ -20,7 +20,24 @@ use gpui_kit::*;
 
 use ui::{app, settings};
 
-actions!(syphr, [NewDownload, OpenSettings, Quit, CloseWindow, Minimize, Zoom, Hide, HideOthers, ShowAll, FocusSearch]);
+actions!(
+    syphr,
+    [
+        NewDownload,
+        OpenSettings,
+        Quit,
+        CloseWindow,
+        Minimize,
+        Zoom,
+        Hide,
+        HideOthers,
+        ShowAll,
+        FocusSearch,
+        BiggerText,
+        SmallerText,
+        ActualSize
+    ]
+);
 // Download-list commands; bound only while the table has focus so they never eat typing in a field.
 actions!(downloads, [TogglePause, Retry, CopyLinks, Remove, SelectAll, ClearSelection]);
 
@@ -76,6 +93,9 @@ fn main() {
         cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, |window| window.remove_window()));
         cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
         cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
+        cx.on_action(|_: &BiggerText, cx| settings::AppSettings::step_font_size(cx, Some(1.)));
+        cx.on_action(|_: &SmallerText, cx| settings::AppSettings::step_font_size(cx, Some(-1.)));
+        cx.on_action(|_: &ActualSize, cx| settings::AppSettings::step_font_size(cx, None));
 
         // Clicking a download notification brings the window back, as the Dock icon does.
         cx.on_system_notification_response(|_, cx| show_main_window(cx));
@@ -116,6 +136,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut { label: "Hide Syphr", default: "cmd-h", context: None, action: || Box::new(Hide) },
     Shortcut { label: "Hide others", default: "alt-cmd-h", context: None, action: || Box::new(HideOthers) },
     Shortcut { label: "Quit", default: secondary!("q"), context: None, action: || Box::new(Quit) },
+    Shortcut { label: "Make text bigger", default: secondary!("="), context: None, action: || Box::new(BiggerText) },
+    Shortcut { label: "Make text smaller", default: secondary!("-"), context: None, action: || Box::new(SmallerText) },
+    Shortcut { label: "Actual size", default: secondary!("0"), context: None, action: || Box::new(ActualSize) },
     Shortcut {
         label: "Pause or resume",
         default: "space",
@@ -207,6 +230,11 @@ fn menus() -> Vec<Menu> {
         MenuItem::os_action("Paste", Paste, OsAction::Paste),
         MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
     ]);
+    let view = Menu::new("View").items([
+        MenuItem::action("Actual Size", ActualSize),
+        MenuItem::action("Make Text Bigger", BiggerText),
+        MenuItem::action("Make Text Smaller", SmallerText),
+    ]);
     if !cfg!(target_os = "macos") {
         return vec![
             Menu::new("File").items([
@@ -217,6 +245,7 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Quit", Quit),
             ]),
             edit,
+            view,
         ];
     }
     vec![
@@ -237,6 +266,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Close Window", CloseWindow),
         ]),
         edit,
+        view,
         Menu::new("Window").items([MenuItem::action("Minimize", Minimize), MenuItem::action("Zoom", Zoom)]),
     ]
 }

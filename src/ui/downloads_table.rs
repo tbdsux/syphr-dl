@@ -31,15 +31,18 @@ const ACTIONS: usize = 7;
 pub struct DownloadsTable {
     pub rows: Vec<Download>,
     pub checked: BTreeSet<u64>,
-    pub empty: (&'static str, &'static str),
+    /// Title, hint, and whether to offer New download.
+    pub empty: (&'static str, &'static str, bool),
     /// Measured table width; Name takes whatever the fixed columns leave.
     pub width: Pixels,
+    /// The text size the columns were laid out for; they're sized in rems.
+    pub rem: Pixels,
     app: WeakEntity<SyphrApp>,
 }
 
 impl DownloadsTable {
     pub fn new(app: WeakEntity<SyphrApp>) -> Self {
-        Self { rows: Vec::new(), checked: BTreeSet::new(), empty: ("", ""), width: px(0.), app }
+        Self { rows: Vec::new(), checked: BTreeSet::new(), empty: ("", "", false), width: px(0.), rem: px(0.), app }
     }
 }
 
@@ -75,7 +78,7 @@ pub fn progress_color(status: Status, cx: &App) -> Hsla {
 }
 
 /// One segment per parallel part, in file order, so stalled connections stand out.
-pub fn fragment_strip(d: &Download, height: Pixels, cx: &App) -> Div {
+pub fn fragment_strip(d: &Download, height: Rems, cx: &App) -> Div {
     let (color, track) = (progress_color(d.status, cx), cx.theme().secondary);
     h_flex().gap_px().children(d.fragments.iter().map(|f| {
         div()
@@ -124,17 +127,21 @@ impl TableDelegate for DownloadsTable {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
+        // In rems so columns grow with the text size setting.
+        let rem = cx.theme().font_size;
         match col_ix {
-            CHECK => Column::new("check", "").width(px(36.)).resizable(false).movable(false),
-            // 712 = sum of the other columns; 12 leaves room for the vertical scrollbar.
-            NAME => Column::new("name", "Name").width((self.width - px(712. + 12.)).max(px(180.))).min_width(px(180.)),
-            PROGRESS => Column::new("progress", "Progress").width(px(170.)),
-            SIZE => Column::new("size", "Size").width(px(150.)).text_right(),
-            SPEED => Column::new("speed", "Speed").width(px(90.)).text_right(),
-            ETA => Column::new("eta", "Time left").width(px(80.)).text_right(),
-            STATUS => Column::new("status", "Status").width(px(110.)),
-            ACTIONS => Column::new("actions", "").width(px(76.)).resizable(false),
+            CHECK => Column::new("check", "").width(rem * 2.75).resizable(false).movable(false),
+            // 54.5 = sum of the other columns; 12px leaves room for the vertical scrollbar.
+            NAME => Column::new("name", "Name")
+                .width((self.width - rem * 54.5 - px(12.)).max(rem * 14.))
+                .min_width(rem * 14.),
+            PROGRESS => Column::new("progress", "Progress").width(rem * 13.),
+            SIZE => Column::new("size", "Size").width(rem * 11.5).text_right(),
+            SPEED => Column::new("speed", "Speed").width(rem * 7.).text_right(),
+            ETA => Column::new("eta", "Time left").width(rem * 6.).text_right(),
+            STATUS => Column::new("status", "Status").width(rem * 8.5),
+            ACTIONS => Column::new("actions", "").width(rem * 5.75).resizable(false),
             _ => unreachable!("columns_count is ACTIONS + 1"),
         }
     }
@@ -174,15 +181,36 @@ impl TableDelegate for DownloadsTable {
     }
 
     fn render_empty(&mut self, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
+        let (title, hint, offer_new) = self.empty;
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_1()
-            .child(Icon::new(IconName::Inbox).large().text_color(muted))
-            .child(div().pt_1().font_weight(FontWeight::MEDIUM).child(self.empty.0))
-            .child(div().text_xs().text_color(muted).child(self.empty.1))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size_12()
+                    .mb_2()
+                    .rounded(theme.radius_lg)
+                    .bg(theme.secondary)
+                    .child(Icon::new(IconName::Inbox).large().text_color(theme.muted_foreground)),
+            )
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(hint))
+            .when(offer_new, |this| {
+                this.child(
+                    Button::new("empty-new")
+                        .mt_3()
+                        .outline()
+                        .icon(IconName::Plus)
+                        .label("New download")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::NewDownload), cx)),
+                )
+            })
     }
 
     fn render_td(
@@ -233,14 +261,14 @@ impl TableDelegate for DownloadsTable {
                             )
                             .child(
                                 div()
-                                    .w(px(32.))
+                                    .w(rems(2.5))
                                     .text_right()
                                     .text_xs()
                                     .text_color(muted)
                                     .child(format!("{:.0}%", d.progress())),
                             ),
                     )
-                    .when(!d.fragments.is_empty(), |this| this.child(fragment_strip(d, px(3.), cx).mr(px(40.))))
+                    .when(!d.fragments.is_empty(), |this| this.child(fragment_strip(d, rems(0.25), cx).mr(rems(3.))))
                     .into_any_element()
             }
             SIZE => div().text_color(muted).child(size_text(d)).into_any_element(),

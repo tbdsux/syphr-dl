@@ -72,7 +72,7 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 | Setting | Default | Notes |
 | --- | --- | --- |
 | Theme | System | Bundled themes or follow the system |
-| Font size | 13 | |
+| Font size | 13 | 11–20 pt; the whole UI scales in rems. View menu and ⌘= / ⌘- / ⌘0 step it |
 | Download folder | `~/Downloads` | |
 | Max concurrent | 3 | Downloads running at once |
 | Speed limit | 0 (unlimited) | KB/s, shared across one download's connections |

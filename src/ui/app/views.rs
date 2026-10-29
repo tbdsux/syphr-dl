@@ -37,7 +37,7 @@ impl SyphrApp {
         let url = add.read(cx).url().clone();
         let open = add.read(cx).is_open();
         let empty = url.read(cx).value().is_empty();
-        let side = px(120.);
+        let side = rems(9.25);
         let field = Input::new(&url)
             .small()
             .prefix(IconName::Globe)
@@ -45,7 +45,7 @@ impl SyphrApp {
                 this.suffix(Kbd::new(Keystroke::parse(secondary!("n")).expect("valid keystroke")).appearance(false))
             })
             .cleanable(true)
-            .w(px(440.));
+            .w(rems(34.));
         let (on_change, on_escape) = (add.clone(), add.clone());
         let popover = Popover::new("add-panel")
             .anchor(Anchor::TopCenter)
@@ -67,7 +67,26 @@ impl SyphrApp {
                 // macOS shows the menus in the system menu bar; elsewhere they live in the window.
                 .map(|this| match &self.menu_bar {
                     Some(menu_bar) => this.child(div().w(side).child(menu_bar.clone())),
-                    None => this.child(div().w(side).text_sm().font_weight(FontWeight::SEMIBOLD).child("Syphr")),
+                    None => this.child(
+                        h_flex()
+                            .w(side)
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size_5()
+                                    .rounded(cx.theme().radius)
+                                    .bg(cx.theme().primary)
+                                    .child(
+                                        Icon::new(IconName::ArrowDown)
+                                            .xsmall()
+                                            .text_color(cx.theme().primary_foreground),
+                                    ),
+                            )
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Syphr")),
+                    ),
                 })
                 .child(
                     h_flex().flex_1().justify_center().child(
@@ -107,7 +126,7 @@ impl SyphrApp {
                 }))
         };
         Sidebar::new("nav")
-            .w(px(208.))
+            .w(rems(16.))
             .child(SidebarGroup::new("Downloads").child(SidebarMenu::new().children([
                 item("All", Icon::new(IconName::Inbox), Filter::All, cx),
                 item("Active", Icon::new(IconName::ArrowDown), Filter::Active, cx),
@@ -153,13 +172,34 @@ impl SyphrApp {
             )
     }
 
+    /// The current list's name and what it holds, with the commands that act on all of it.
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let shown = self.downloads.iter().filter(|d| self.filter.matches(d));
+        let (total, active, done) = shown.fold((0, 0, 0), |(t, a, c), d| {
+            (t + 1, a + usize::from(d.status == Status::Downloading), c + usize::from(d.status == Status::Completed))
+        });
+        let summary = match total {
+            0 => "Empty".to_string(),
+            1 => "1 download".to_string(),
+            n => format!("{n} downloads"),
+        };
+        let summary = [(active, "downloading"), (done, "completed")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0 && *n != total)
+            .fold(summary, |s, (n, what)| format!("{s} · {n} {what}"));
         h_flex()
             .gap_1()
-            .px_3()
-            .py_2()
+            .px_4()
+            .py_3()
             .border_b_1()
             .border_color(cx.theme().border)
+            .child(
+                v_flex()
+                    .mr_3()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(self.filter.title()))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(summary)),
+            )
+            .child(div().flex_1())
             .child(
                 Button::new("resume-all")
                     .small()
@@ -171,8 +211,7 @@ impl SyphrApp {
             .child(Button::new("pause-all").small().ghost().icon(IconName::Pause).label("Pause all").on_click(
                 cx.listener(|this, _, _, cx| this.set_all(&[Status::Downloading, Status::Queued], Status::Paused, cx)),
             ))
-            .child(div().flex_1())
-            .child(Input::new(&self.search).small().prefix(IconName::Search).cleanable(true).w(px(220.)))
+            .child(Input::new(&self.search).small().prefix(IconName::Search).cleanable(true).ml_2().w(rems(17.)))
     }
 
     fn render_detail(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
@@ -184,7 +223,7 @@ impl SyphrApp {
         let stat = |title: &'static str, value: AnyElement| {
             v_flex().gap_0p5().min_w_0().child(div().text_xs().text_color(muted).child(title)).child(value)
         };
-        let text = |s: String| div().truncate().child(s).into_any_element();
+        let text = |s: String| div().truncate().font_weight(FontWeight::MEDIUM).child(s).into_any_element();
 
         v_flex()
             .m_3()
@@ -260,7 +299,7 @@ impl SyphrApp {
                     v_flex()
                         .gap_1()
                         .child(div().text_xs().text_color(muted).child(format!("{} connections", d.fragments.len())))
-                        .child(fragment_strip(d, px(6.), cx)),
+                        .child(fragment_strip(d, rems(0.5), cx)),
                 )
             })
             .child(
@@ -454,10 +493,13 @@ impl Render for SyphrApp {
                         .child({
                             let table = self.table.clone();
                             div().flex_1().min_h_0().relative().child(DataTable::new(&self.table).small()).on_prepaint(
-                                move |bounds, _, cx| {
+                                move |bounds, window, cx| {
+                                    let rem = window.rem_size();
                                     table.update(cx, |table, cx| {
-                                        if table.delegate().width != bounds.size.width {
+                                        let d = table.delegate();
+                                        if d.width != bounds.size.width || d.rem != rem {
                                             table.delegate_mut().width = bounds.size.width;
+                                            table.delegate_mut().rem = rem;
                                             table.refresh(cx);
                                             cx.notify();
                                         }
