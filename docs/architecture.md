@@ -40,7 +40,8 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 2. Reconcile status with the job:
    - `Queued`/`Downloading` with no running job and a free slot → start a job (`Request` built from current settings).
    - `Downloading` with no free slot → back to `Queued`.
-   - `Paused`/`Failed`/`Completed` with a running job → stop it.
+   - `Paused`/`Failed`/`Completed`/`Missing` with a running job → stop it.
+   - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
 3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row.
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row drops its `Job`, which aborts it.
@@ -50,7 +51,7 @@ Settings such as the speed limit and connection count apply to downloads started
 ## Statuses
 
 ```
-Queued ──slot free──▶ Downloading ──ok──▶ Completed
+Queued ──slot free──▶ Downloading ──ok──▶ Completed ◀──file back / file gone──▶ Missing ──download again──▶ Queued
    ▲                   │    │
    └──no slot──────────┘    └──error──▶ Failed ──retry──▶ Queued
                 Paused ◀──pause / resume──▶ Downloading

@@ -38,7 +38,7 @@ impl Filter {
         match self {
             Filter::All => true,
             Filter::Active => matches!(d.status, Status::Downloading | Status::Paused | Status::Queued),
-            Filter::Completed => d.status == Status::Completed,
+            Filter::Completed => matches!(d.status, Status::Completed | Status::Missing),
             Filter::Failed => d.status == Status::Failed,
             Filter::Kind(kind) => d.kind == kind,
         }
@@ -350,10 +350,16 @@ impl SyphrApp {
                     d.status = Status::Queued;
                     changed = true;
                 }
-                Status::Paused | Status::Failed | Status::Completed | Status::Queued if running => {
+                Status::Paused | Status::Failed | Status::Completed | Status::Missing | Status::Queued if running => {
                     job.stop();
                     active -= 1;
                     changed = true;
+                }
+                Status::Completed | Status::Missing => {
+                    let present = d.path.as_ref().is_none_or(|p| p.exists());
+                    let status = if present { Status::Completed } else { Status::Missing };
+                    changed |= d.status != status;
+                    d.status = status;
                 }
                 _ => {}
             }

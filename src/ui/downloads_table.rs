@@ -59,6 +59,7 @@ pub fn status_tag(status: Status) -> Tag {
         Status::Paused => Tag::secondary().child("Paused"),
         Status::Queued => Tag::secondary().child("Queued"),
         Status::Completed => Tag::success().child("Completed"),
+        Status::Missing => Tag::warning().child("Missing"),
         Status::Failed => Tag::danger().child("Failed"),
     }
 }
@@ -68,7 +69,7 @@ pub fn progress_color(status: Status, cx: &App) -> Hsla {
     match status {
         Status::Completed => theme.success,
         Status::Failed => theme.danger,
-        Status::Paused | Status::Queued => theme.muted_foreground,
+        Status::Paused | Status::Queued | Status::Missing => theme.muted_foreground,
         Status::Downloading => theme.primary,
     }
 }
@@ -93,12 +94,13 @@ pub fn next_step(status: Status) -> (&'static str, IconName, Option<Status>) {
         Status::Paused => ("Resume", IconName::Play, Some(Status::Downloading)),
         Status::Failed => ("Retry", IconName::RotateCw, Some(Status::Queued)),
         Status::Completed => ("Show in folder", IconName::FolderOpen, None),
+        Status::Missing => ("Download again", IconName::RotateCw, Some(Status::Queued)),
     }
 }
 
 pub fn size_text(d: &Download) -> String {
     match d.total_bytes {
-        Some(total) if d.status == Status::Completed => format_bytes(total),
+        Some(total) if matches!(d.status, Status::Completed | Status::Missing) => format_bytes(total),
         Some(total) => format!("{} of {}", format_bytes(d.received_bytes), format_bytes(total)),
         None if d.received_bytes > 0 => format_bytes(d.received_bytes),
         None => "—".into(),

@@ -8,6 +8,8 @@ pub enum Status {
     Paused,
     Queued,
     Completed,
+    /// Completed, but the file is no longer where it was saved.
+    Missing,
     Failed,
 }
 
