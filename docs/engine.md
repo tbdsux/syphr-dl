@@ -62,7 +62,7 @@ On the first run, `probe` picks a free path in the folder and splits the file:
 
 ### 3. Fetch
 
-All bytes go into `<name>.part` in the destination folder. Each unfinished part runs as its own task:
+All bytes go into `<name>.part` in Syphr's data folder, under `partial/<hash of destination folder>/`. Each unfinished part runs as its own task:
 
 - Ranged: `Range: bytes=<start + done>-<end>`, so a part resumes from its own offset. A server that answers anything other than 206 fails the part.
 - Not ranged: the file is truncated and the single part restarts from zero.
@@ -75,7 +75,7 @@ If any part fails all its retries, the job fails with that part's error.
 
 ### 4. Finish
 
-When every part is done the file is synced, then `.part` is renamed to the final name. If something else took that name meanwhile, the next free name is used.
+When every part is done the file is synced, then `.part` is moved to the final name (renamed, or copied and deleted when the destination is on another volume). If something else took that name meanwhile, the next free name is used.
 
 ### Pause and resume
 
@@ -103,9 +103,9 @@ When every part is done the file is synced, then `.part` is renamed to the final
    - `-r <limit>` when a speed limit is set
    - `--ffmpeg-location` when ffmpeg is a full path
    - a progress template that prints `downloaded total` per line, and `--print after_move:filepath` for the final path
-   - output into `<folder>/.syphr-partial/` as `<typed name or title>.<ext>`
+   - output into the staging folder `<data folder>/partial/<hash of destination folder>/` as `<typed name or title>.<ext>`
 3. Reads progress from stdout. Video and audio download one after the other, each counting from zero, so a drop in the counter starts a new base. The last stderr line is kept as the error message.
-4. On success, moves the file out of `.syphr-partial` under a free name and removes the staging folder if it's empty.
+4. On success, moves the file into the destination folder under a free name and removes the staging folder if it's empty.
 
 yt-dlp is killed when the job is stopped (`kill_on_drop`). The staging folder name is stable, so yt-dlp's own `.part` files let a paused download resume.
 

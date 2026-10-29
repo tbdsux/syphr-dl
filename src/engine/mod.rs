@@ -171,6 +171,24 @@ impl Drop for Job {
     }
 }
 
+/// The folder holding unfinished downloads, and the bytes they take.
+pub fn partial_usage() -> (PathBuf, u64) {
+    fn size(path: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+        entries
+            .flatten()
+            .map(|e| match e.metadata() {
+                Ok(m) if m.is_dir() => size(&e.path()),
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            })
+            .sum()
+    }
+    let root = names::partial_root();
+    let bytes = size(&root);
+    (root, bytes)
+}
+
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }

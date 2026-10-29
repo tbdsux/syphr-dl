@@ -438,7 +438,7 @@ pub fn allow_close(active: bool, window: &mut Window, cx: &mut App) -> bool {
 
 /// Shows `path` selected in the system file manager.
 #[cfg(not(windows))]
-fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
+pub(crate) fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
     if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg("-R").arg(path).spawn()
     } else {
@@ -448,7 +448,7 @@ fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
 }
 
 #[cfg(windows)]
-fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
+pub(crate) fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     // Explorer wants the quotes after the comma, which Rust's own argument quoting won't produce.
     std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn()

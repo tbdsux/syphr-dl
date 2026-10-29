@@ -1,6 +1,10 @@
 //! Picking and cleaning the names files are saved under.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::{Path, PathBuf},
+};
 
 use reqwest::{Response, header};
 
@@ -115,10 +119,30 @@ pub(super) fn file_name_of(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Unfinished files live in Syphr's own folder, one subfolder per destination folder so names never collide.
+pub(super) fn partial_dir(folder: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    folder.hash(&mut hasher);
+    partial_root().join(format!("{:016x}", hasher.finish()))
+}
+
+pub(super) fn partial_root() -> PathBuf {
+    crate::ui::settings::data_dir().join("partial")
+}
+
 pub(super) fn part_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(".part");
-    PathBuf::from(name)
+    partial_dir(path.parent().unwrap_or(Path::new(""))).join(format!("{}.part", file_name_of(path)))
+}
+
+/// Rename, or copy then delete when the destination is on another volume.
+pub(super) fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    fs::copy(from, to).inspect_err(|_| {
+        let _ = fs::remove_file(to);
+    })?;
+    fs::remove_file(from)
 }
 
 /// "name.zip", then "name (1).zip", … skipping names whose file or partial file exists.
@@ -159,8 +183,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("syphr-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         File::create(dir.join("a.zip")).unwrap();
-        File::create(dir.join("a (1).zip.part")).unwrap();
+        let part = part_path(&dir.join("a (1).zip"));
+        fs::create_dir_all(part.parent().unwrap()).unwrap();
+        File::create(&part).unwrap();
         assert_eq!(unique_path(&dir, "a.zip"), dir.join("a (2).zip"));
         fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(part.parent().unwrap()).unwrap();
     }
 }

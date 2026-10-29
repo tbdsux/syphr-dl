@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
 use gpui_kit::component::{
-    Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
+    Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
     button::Button,
     h_flex,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -9,6 +9,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
+
+use crate::download::format_bytes;
 
 pub const FONT_FAMILY: &str = "Geist";
 pub const SYSTEM_THEME: &str = "System";
@@ -305,6 +307,29 @@ impl Render for SettingsView {
                     .default_value(defaults.show_quick_download),
                 )
                 .description("A sidebar button that starts a download from the last copied link."),
+                SettingItem::new(
+                    "Unfinished downloads",
+                    SettingField::render(|_, _, _| {
+                        // Re-measured on each render; the folder holds a handful of files.
+                        let (root, bytes) = crate::engine::partial_usage();
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(if bytes == 0 { "None".into() } else { format_bytes(bytes) })
+                            .child(
+                                Button::new("reveal-partial")
+                                    .outline()
+                                    .label("Show in folder")
+                                    .disabled(bytes == 0)
+                                    .on_click(move |_, window, cx| {
+                                        if let Err(e) = crate::ui::app::reveal(&root) {
+                                            window.push_notification(format!("Couldn't open the folder: {e}"), cx);
+                                        }
+                                    }),
+                            )
+                    }),
+                )
+                .description("Partial files kept so paused downloads can resume. Removed downloads leave theirs here."),
             ]),
         );
 

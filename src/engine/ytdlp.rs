@@ -14,7 +14,7 @@ use gpui_kit::SharedString;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use super::names::{file_name_of, sanitize, unique_path};
+use super::names::{file_name_of, move_file, partial_dir, sanitize, unique_path};
 use super::{Request, Shared, err};
 
 /// shortcut: a fixed host list decides when to ask yt-dlp; switch to `yt-dlp --simulate` probing if users need more sites.
@@ -207,7 +207,7 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
     }
     // yt-dlp skips a file that already exists instead of renaming, so it saves into a staging folder
     // and the finished file is moved out under a free name. The stable folder lets a paused download resume.
-    let staging = request.folder.join(".syphr-partial");
+    let staging = partial_dir(&request.folder);
     let template = match request.file_name.as_deref().map(sanitize).filter(|n| !n.is_empty()) {
         Some(name) => format!("{}.%(ext)s", name.replace('%', "%%")),
         None => "%(title)s.%(ext)s".into(),
@@ -283,7 +283,7 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
     match path {
         Some(path) if status.success() => {
             let dest = unique_path(&request.folder, &file_name_of(&path));
-            fs::rename(&path, &dest).map_err(err)?;
+            move_file(&path, &dest).map_err(err)?;
             // Fails while another download is still using it, which is fine.
             let _ = fs::remove_dir(&staging);
             Ok(dest)

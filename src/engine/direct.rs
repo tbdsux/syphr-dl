@@ -14,7 +14,7 @@ use std::{
 use reqwest::{StatusCode, header};
 use tokio::task::JoinSet;
 
-use super::names::{chosen_name, file_name_of, part_path, response_file_name, unique_path};
+use super::names::{chosen_name, file_name_of, move_file, part_path, response_file_name, unique_path};
 use super::{CLIENT, Layout, Part, Request, Shared, err};
 
 const MIN_PART_BYTES: u64 = 1024 * 1024;
@@ -33,6 +33,8 @@ pub(super) async fn run_direct(request: &Request, shared: &Shared) -> Result<Pat
         // The partial file was removed while paused, so earlier progress is gone.
         layout.parts.iter().for_each(|p| p.done.store(0, Relaxed));
     }
+    let part_dir = part_path.parent().expect("part files live in a folder");
+    fs::create_dir_all(part_dir).map_err(err)?;
     let file = Arc::new(OpenOptions::new().create(true).write(true).truncate(false).open(&part_path).map_err(err)?);
 
     let pending: Vec<usize> = (0..layout.parts.len())
@@ -56,7 +58,9 @@ pub(super) async fn run_direct(request: &Request, shared: &Shared) -> Result<Pat
     } else {
         layout.path.clone()
     };
-    fs::rename(&part_path, &path).map_err(err)?;
+    move_file(&part_path, &path).map_err(err)?;
+    // Fails while another download is still using it, which is fine.
+    let _ = fs::remove_dir(part_dir);
     Ok(path)
 }
 
