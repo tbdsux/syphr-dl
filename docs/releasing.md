@@ -36,6 +36,8 @@ Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https:
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+A tag with a suffix, like `v0.2.0-beta.1`, is published as a prerelease. The suffix is dropped from the macOS bundle version, which must be numeric.
+
 ## Signing and notarization
 
 Releases are signed ad hoc, so macOS warns on first launch. To ship signed, notarized builds you need an Apple Developer account, then in `release.yml`:
