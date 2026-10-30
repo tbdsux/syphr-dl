@@ -29,11 +29,20 @@ jobs:
           remove_dotnet: true
           remove_haskell: true
           remove_tool_cache: true
+      # Same for Windows, which has no such action; rmdir is much faster than Remove-Item here.
+      - if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          rmdir /s /q C:\Android
+          rmdir /s /q "C:\Program Files\dotnet"
+          exit /b 0
       - uses: actions/checkout@v7
       # Builds on a Dev Drive skip Defender's per-file scanning; DEV_DRIVE_WORKSPACE is only set on Windows.
+      # The default 2GB can't hold GPUI's target dir; the drive is dynamic, so it only takes what it uses.
       - if: runner.os == 'Windows'
         uses: samypr100/setup-dev-drive@v4
         with:
+          drive-size: 12GB
           workspace-copy: true
       - uses: dtolnay/rust-toolchain@stable
         with:
