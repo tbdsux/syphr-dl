@@ -20,7 +20,7 @@ Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https:
 
 1. Fails if the tag doesn't match `version` in `Cargo.toml`. The macOS and Windows builds then run in parallel.
 2. Builds `aarch64-apple-darwin` and `x86_64-apple-darwin` and joins them into one universal binary with `lipo`.
-3. Assembles `Syphr.app` with an `Info.plist` (identifier `dev.tbdsux.syphr-dl`, version from the tag, build number from the run number).
+3. Assembles `Syphr.app` with the icon from `assets/icon/Syphr.icns` and an `Info.plist` (identifier `dev.tbdsux.syphr-dl`, version from the tag, build number from the run number).
 4. Signs it ad hoc and verifies the signature.
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
 6. Alongside, a Windows job builds `syphr-dl.exe` and zips it as `Syphr-vX.Y.Z-windows-x64.zip`.

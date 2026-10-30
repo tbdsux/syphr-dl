@@ -1,3 +1,5 @@
+<img src="assets/icon/icon.png" width="96" alt="Syphr icon">
+
 # Syphr
 
 A desktop download manager app. Paste a link and Syphr downloads it: plain files over parallel HTTP connections, and video or audio from sites like YouTube through [yt-dlp](https://github.com/yt-dlp/yt-dlp).
