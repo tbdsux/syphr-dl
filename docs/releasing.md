@@ -4,7 +4,7 @@ Two GitHub Actions workflows, on macOS, Windows and Ubuntu.
 
 ## Test — `.github/workflows/test.yml`
 
-Runs on every push to `main` and every pull request, on macOS, Windows and Ubuntu (Linux first installs the X11, Wayland and font headers GPUI links against):
+Runs on every push to `main` and every pull request, on macOS, Windows and Ubuntu (Linux first frees disk space with [free-disk-space](https://github.com/endersonmenezes/free-disk-space), as the release Linux job does, then installs the X11, Wayland and font headers GPUI links against):
 
 ```bash
 cargo fmt --check

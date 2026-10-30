@@ -112,6 +112,13 @@ jobs:
     needs: check
     runs-on: ubuntu-22.04
     steps:
+      # The runner runs out of disk building GPUI and packaging; drop preinstalled SDKs it never uses.
+      - uses: endersonmenezes/free-disk-space@v4.0.1
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
