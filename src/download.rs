@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use gpui_kit::SharedString;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Ordered for sorting: active work first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
     Downloading,
     Paused,

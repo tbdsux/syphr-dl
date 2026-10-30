@@ -5,7 +5,7 @@ use std::{
 };
 
 use gpui_kit::component::{
-    WindowExt,
+    ActiveTheme, WindowExt,
     button::ButtonVariant,
     input::{InputEvent, InputState},
     menu::AppMenuBar,
@@ -90,20 +90,40 @@ impl SyphrApp {
         let subscriptions = vec![
             cx.subscribe_in(&add, window, |this, _, AddEvent::Submit, window, cx| this.submit_add(window, cx)),
             cx.observe(&add, |_, _, cx| cx.notify()),
+            cx.observe_global::<AppSettings>(|this, cx| this.sync_table(cx)),
             cx.subscribe(&search, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.sync_table(cx);
                 }
             }),
             cx.subscribe_in(&table, window, |this, table, event, window, cx| {
-                if let TableEvent::SelectRow(ix) = event {
-                    if this.own_row_events > 0 {
-                        this.own_row_events -= 1;
-                        return;
+                match event {
+                    TableEvent::SelectRow(ix) => {
+                        if this.own_row_events > 0 {
+                            this.own_row_events -= 1;
+                            return;
+                        }
+                        let ids: Vec<u64> = table.read(cx).delegate().rows.iter().map(|d| d.id).collect();
+                        let modifiers = window.modifiers();
+                        this.select_row(&ids, *ix, modifiers.shift, modifiers.secondary(cx), cx);
                     }
-                    let ids: Vec<u64> = table.read(cx).delegate().rows.iter().map(|d| d.id).collect();
-                    let modifiers = window.modifiers();
-                    this.select_row(&ids, *ix, modifiers.shift, modifiers.secondary(cx), cx);
+                    // Sent once the drag ends; Name then gives up or takes back the difference.
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        let rem = cx.theme().font_size;
+                        let own = table.update(cx, |table, _| {
+                            let d = table.delegate_mut();
+                            if d.own_fits > 0 {
+                                d.own_fits -= 1;
+                                return true;
+                            }
+                            d.set_widths(widths, rem);
+                            false
+                        });
+                        if !own {
+                            this.sync_table(cx);
+                        }
+                    }
+                    _ => {}
                 }
             }),
         ];
@@ -154,7 +174,7 @@ impl SyphrApp {
     }
 
     /// Pushes the filtered list into the table and keeps the selection on the same download.
-    fn sync_table(&mut self, cx: &mut Context<Self>) {
+    pub fn sync_table(&mut self, cx: &mut Context<Self>) {
         let query = self.search.read(cx).value().to_lowercase();
         let rows: Vec<Download> = self
             .downloads
@@ -169,14 +189,18 @@ impl SyphrApp {
         };
         // Selection only covers what is on screen, so hidden rows are never acted on by accident.
         self.checked.retain(|id| rows.iter().any(|d| d.id == *id));
-        let anchor_ix =
-            self.anchor.filter(|id| self.checked.contains(id)).and_then(|id| rows.iter().position(|d| d.id == id));
+        let anchor = self.anchor.filter(|id| self.checked.contains(id));
         let checked = self.checked.clone();
+        let hidden = AppSettings::get(cx).hidden_columns.clone();
         let mut own_events = 0;
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().rows = rows;
-            table.delegate_mut().checked = checked;
-            table.delegate_mut().empty = empty;
+            let d = table.delegate_mut();
+            d.rows = rows;
+            d.sort_rows();
+            d.set_hidden(&hidden);
+            d.checked = checked;
+            d.empty = empty;
+            let anchor_ix = anchor.and_then(|id| d.rows.iter().position(|d| d.id == id));
             // Leave the keyboard cursor alone while it sits on a selected row; otherwise move it to the anchor.
             let rows = &table.delegate().rows;
             let cursor_ok = table
@@ -191,7 +215,10 @@ impl SyphrApp {
                 }
                 None => table.clear_selection(cx),
             }
-            table.refresh(cx);
+            if std::mem::take(&mut table.delegate_mut().stale) {
+                table.refresh(cx);
+            }
+            cx.notify();
         });
         self.own_row_events += own_events;
         cx.notify();

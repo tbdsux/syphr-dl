@@ -20,7 +20,7 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, Status, format_bytes};
 use crate::ui::downloads_table::{
-    eta_text, fragment_strip, kind_icon, next_step, progress_color, size_text, speed_text, status_tag,
+    DownloadsTable, eta_text, fragment_strip, kind_icon, next_step, progress_color, size_text, speed_text, status_tag,
 };
 use crate::ui::settings::AppSettings;
 use crate::{
@@ -502,6 +502,8 @@ impl Render for SyphrApp {
                                             table.delegate_mut().rem = rem;
                                             table.refresh(cx);
                                             cx.notify();
+                                        } else {
+                                            DownloadsTable::follow_drag(table, window, cx);
                                         }
                                     })
                                 },

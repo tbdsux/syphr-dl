@@ -14,7 +14,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, details card, bulk bar, status bar |
 | `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
-| `src/ui/downloads_table.rs` | The downloads table (columns, row rendering) |
+| `src/ui/downloads_table.rs` | The downloads table (columns, sorting, row rendering) |
 | `src/ui/settings.rs` | `AppSettings`, the settings window, themes and appearance |
 
 ## Startup
@@ -31,6 +31,14 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 4. Submitting adds a `Download` with status `Queued` to the top of the list.
 
 `kind_for` sorts each download into Video, Music, Document, Program or Archive by extension, which drives the sidebar filters and icons.
+
+## The downloads table
+
+Rows show newest-added first. Clicking a column header (or its sort icon) cycles descending → ascending → back to newest-added; ties always keep newest-added first. The sort lives in `DownloadsTable::sort` for the session and is reapplied on every `sync_table`, so live columns like Speed reorder as they change.
+
+Settings → Appearance → *Download list columns* hides Progress, Size, Speed, Time left or Status (`AppSettings::hidden_columns`, by column id). Columns can be dragged between the checkboxes and the actions, which stay pinned at the edges; the order is kept for the session, hidden columns included.
+
+Until a column is resized, Name fills the table. After that, the Actions column takes the slack (its buttons stay right-aligned), so dragging an edge moves only the columns to its right, and a column can only grow into that slack: narrow Name first to make room. Name gives width back when the window gets too narrow. `DownloadsTable::layout` computes the widths. During a drag, `follow_drag` resizes Actions through the kit's `fit_col`, never `refresh`, which would reset the kit's column bounds and break the drag; columns are rebuilt only when they change (`stale`). Resized widths are kept in rems for the session.
 
 ## The pump
 

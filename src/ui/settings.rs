@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    process::Command,
+};
 
 use gpui_kit::component::{
     Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
@@ -35,6 +39,8 @@ pub struct AppSettings {
     /// Opening the link field fills it with a copied link.
     pub auto_paste: bool,
     pub show_quick_download: bool,
+    /// Download list columns turned off, by column id.
+    pub hidden_columns: BTreeSet<String>,
     /// Keys the user changed, by action name; the rest use `Shortcut::default`.
     pub shortcuts: BTreeMap<String, String>,
 }
@@ -55,6 +61,7 @@ impl Default for AppSettings {
             notify_on_complete: true,
             auto_paste: true,
             show_quick_download: true,
+            hidden_columns: BTreeSet::new(),
             shortcuts: BTreeMap::new(),
         }
     }
@@ -220,8 +227,11 @@ impl Render for SettingsView {
             vec![(SYSTEM_THEME.into(), "Match system (Default Light / Dark)".into())];
         themes.extend(ThemeRegistry::global(cx).sorted_themes().into_iter().map(|t| (t.name.clone(), t.name.clone())));
 
-        let appearance =
-            SettingPage::new("Appearance").icon(IconName::Palette).default_open(true).resettable(true).group(
+        let appearance = SettingPage::new("Appearance")
+            .icon(IconName::Palette)
+            .default_open(true)
+            .resettable(true)
+            .group(
                 SettingGroup::new().items([
                     SettingItem::new(
                         "Theme",
@@ -256,7 +266,27 @@ impl Render for SettingsView {
                         "Base size in points; spacing and controls scale with it. The View menu changes it too.",
                     ),
                 ]),
-            );
+            )
+            .group(SettingGroup::new().title("Download list columns").items(
+                crate::ui::downloads_table::OPTIONAL_COLUMNS.iter().map(|&(id, label)| {
+                    SettingItem::new(
+                        label,
+                        SettingField::switch(
+                            move |cx: &App| !AppSettings::get(cx).hidden_columns.contains(id),
+                            move |show: bool, cx: &mut App| {
+                                AppSettings::update(cx, |s| {
+                                    if show {
+                                        s.hidden_columns.remove(id);
+                                    } else {
+                                        s.hidden_columns.insert(id.into());
+                                    }
+                                })
+                            },
+                        )
+                        .default_value(true),
+                    )
+                }),
+            ));
 
         let downloads = SettingPage::new("Downloads").icon(IconName::HardDrive).resettable(true).group(
             SettingGroup::new().items([
