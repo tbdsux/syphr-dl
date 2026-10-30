@@ -22,8 +22,8 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 | OS | Status |
 | --- | --- |
 | macOS 15+ | Prebuilt DMG (Apple Silicon and Intel) |
-| Linux | Prebuilt tarball (x64) |
-| Windows 10+ | Prebuilt zip (x64) |
+| Linux | Prebuilt .deb, AppImage and tarball (x64) |
+| Windows 10+ | Prebuilt installer and zip (x64) |
 
 ### macOS
 
@@ -39,7 +39,13 @@ Syphr offers to install yt-dlp and ffmpeg for you the first time you add a video
 
 ### Linux
 
-Download `Syphr-vX.Y.Z-linux-x64.tar.gz` from [Releases](../../releases), unpack it, and run `syphr-dl`. It needs a Wayland or X11 session and a Vulkan driver. On other architectures, build from source (see [Linux build requirements](#linux-1)).
+From [Releases](../../releases), download one of:
+
+- `Syphr-vX.Y.Z-linux-amd64.deb` for Debian and Ubuntu: `sudo apt install ./Syphr-vX.Y.Z-linux-amd64.deb`. Update it the same way with each new `.deb`.
+- `Syphr-vX.Y.Z-linux-x86_64.AppImage`: make it executable (`chmod +x`) and run it. It updates itself.
+- `Syphr-vX.Y.Z-linux-x64.tar.gz`: unpack it and run `syphr-dl`.
+
+Syphr needs a Wayland or X11 session and a Vulkan driver. On other architectures, build from source (see [Linux build requirements](#linux-1)).
 
 Syphr can install yt-dlp for you, but install ffmpeg with your package manager:
 
@@ -49,7 +55,7 @@ sudo apt install ffmpeg
 
 ### Windows
 
-Download `Syphr-vX.Y.Z-windows-x64.zip` from [Releases](../../releases), unzip it, and run `syphr-dl.exe`.
+Download `Syphr-vX.Y.Z-windows-x64-setup.exe` from [Releases](../../releases) and run it. It installs for your user only, with no admin prompt. Or download `Syphr-vX.Y.Z-windows-x64.zip`, unzip it, and run `syphr-dl.exe`.
 
 Releases aren't code-signed yet, so SmartScreen may warn on first launch. Choose **More info**, then **Run anyway**.
 

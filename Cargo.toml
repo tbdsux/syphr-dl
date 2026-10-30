@@ -23,3 +23,20 @@ tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] 
 lto = "thin"
 strip = true
 
+
+# For `cargo packager` in release.yml (Linux .deb and AppImage, Windows NSIS installer); macOS packs its own DMG.
+[package.metadata.packager]
+product-name = "Syphr"
+identifier = "dev.tbdsux.syphr-dl"
+category = "Utility"
+copyright = "Copyright © 2026 Joshue Abance"
+icons = ["assets/icon/icon.png"]
+binaries = [{ path = "syphr-dl", main = true }]
+out-dir = "dist/pkg"
+
+[package.metadata.packager.deb]
+depends = ["libxkbcommon0", "libxkbcommon-x11-0", "libwayland-client0", "libx11-xcb1", "libxcb1", "libfontconfig1", "libfreetype6", "libvulkan1"]
+
+# Per-user, so the in-app updater can write over the installed exe without admin rights.
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"

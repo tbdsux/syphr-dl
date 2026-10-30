@@ -23,9 +23,11 @@ Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https:
 3. Assembles `Syphr.app` with the icon from `assets/icon/Syphr.icns` and an `Info.plist` (identifier `dev.tbdsux.syphr-dl`, version from the tag, build number from the run number).
 4. Signs it ad hoc and verifies the signature.
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
-6. Alongside, a Windows job builds `syphr-dl.exe` and zips it as `Syphr-vX.Y.Z-windows-x64.zip`.
-7. A Linux job builds `syphr-dl` on Ubuntu 22.04 (for an older glibc baseline) and packs it as `Syphr-vX.Y.Z-linux-x64.tar.gz`.
-8. Once all builds pass, publishes a GitHub release with the DMG, the zip, the tarball, a `SHA256SUMS` of all three, and generated notes. The in-app updater only offers releases that have `SHA256SUMS` (see [updates.md](updates.md)).
+6. Alongside, a Windows job builds `syphr-dl.exe`, zips it as `Syphr-vX.Y.Z-windows-x64.zip`, and packs a per-user NSIS installer, `Syphr-vX.Y.Z-windows-x64-setup.exe`.
+7. A Linux job builds `syphr-dl` on Ubuntu 22.04 (for an older glibc baseline) and packs it as `Syphr-vX.Y.Z-linux-x64.tar.gz`, `Syphr-vX.Y.Z-linux-amd64.deb` and `Syphr-vX.Y.Z-linux-x86_64.AppImage`.
+8. Once all builds pass, publishes a GitHub release with every file, a `SHA256SUMS` of them, and generated notes. The in-app updater only offers releases that have `SHA256SUMS` (see [updates.md](updates.md)).
+
+The installers come from [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) (pinned in `release.yml`), configured under `[package.metadata.packager]` in `Cargo.toml`. It names its output `syphr-dl_<version>_<arch>…`, so the jobs rename each file to the `Syphr-<tag>…` names the updater looks for.
 
 ## Cutting a release
 
@@ -49,4 +51,4 @@ Releases are signed ad hoc, so macOS warns on first launch. To ship signed, nota
 
 The step to replace is marked with a `shortcut:` comment.
 
-Windows builds are unsigned, so SmartScreen warns on first launch. Signing needs a code-signing certificate and a `signtool sign` step after the build (also marked with a `shortcut:` comment).
+Windows builds are unsigned, so SmartScreen warns on first launch. Signing needs a code-signing certificate and a `signtool sign` step after the build, and the installer signed the same way (also marked with a `shortcut:` comment).
