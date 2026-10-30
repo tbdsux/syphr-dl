@@ -71,20 +71,7 @@ impl SyphrApp {
                         h_flex()
                             .w(side)
                             .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size_5()
-                                    .rounded(cx.theme().radius)
-                                    .bg(cx.theme().primary)
-                                    .child(
-                                        Icon::new(IconName::ArrowDown)
-                                            .xsmall()
-                                            .text_color(cx.theme().primary_foreground),
-                                    ),
-                            )
+                            .child(img(crate::LOGO).size_5())
                             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Syphr")),
                     ),
                 })

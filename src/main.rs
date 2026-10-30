@@ -11,6 +11,7 @@ macro_rules! secondary {
 mod download;
 mod engine;
 mod tools;
+mod tray;
 mod ui;
 
 use std::borrow::Cow;
@@ -44,10 +45,16 @@ actions!(downloads, [TogglePause, Retry, CopyLinks, Remove, SelectAll, ClearSele
 // The default bundle only has the component icons; these Lucide extras are used for categories.
 gpui_kit::assets::icon_assets!(ExtraIcons, [Film, Music, Package, FileArchive, ListChecks, Keyboard]);
 
+/// The app icon, for `img()`.
+pub const LOGO: &str = "icon/icon.png";
+
 struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == LOGO {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/icon/icon.png"))));
+        }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
@@ -82,6 +89,7 @@ fn main() {
         settings::load_bundled_themes(cx);
         settings::apply_appearance(cx);
         tools::update_ytdlp(cx);
+        tray::install(cx);
 
         apply_shortcuts(cx);
         cx.on_action(|_: &OpenSettings, cx| settings::open_settings_window(cx));

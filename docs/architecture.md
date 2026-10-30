@@ -16,10 +16,15 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/downloads_table.rs` | The downloads table (columns, sorting, row rendering) |
 | `src/ui/settings.rs` | `AppSettings`, the settings window, themes and appearance |
+| `src/tray.rs` | The menu bar icon (macOS) and notification-area icon (Windows, Linux) |
 
 ## Startup
 
-`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the Geist fonts and bundled themes, reads settings, binds shortcuts, builds the menus, and opens the main window. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`).
+`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the Geist fonts and bundled themes, reads settings, binds shortcuts, builds the menus, adds the tray icon, and opens the main window. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`).
+
+## Running in the background
+
+Closing the main window on macOS hides the app, so downloads keep going; elsewhere it minimizes while downloads are running and quits otherwise (`allow_close`). The tray icon (`tray::install`, built on `tray-icon`) offers *Show Syphr* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
 
 ## Adding a download
 
