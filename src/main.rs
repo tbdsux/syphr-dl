@@ -13,6 +13,7 @@ mod engine;
 mod tools;
 mod tray;
 mod ui;
+mod update;
 
 use std::borrow::Cow;
 
@@ -43,7 +44,7 @@ actions!(
 actions!(downloads, [TogglePause, Retry, CopyLinks, Remove, SelectAll, ClearSelection]);
 
 // The default bundle only has the component icons; these Lucide extras are used for categories.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Film, Music, Package, FileArchive, ListChecks, Keyboard]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [Film, Music, Package, FileArchive, ListChecks, Keyboard, CircleArrowUp]);
 
 /// The app icon, for `img()`.
 pub const LOGO: &str = "icon/icon.png";
@@ -89,6 +90,7 @@ fn main() {
         settings::load_bundled_themes(cx);
         settings::apply_appearance(cx);
         tools::update_ytdlp(cx);
+        update::start(cx);
         tray::install(cx);
 
         apply_shortcuts(cx);

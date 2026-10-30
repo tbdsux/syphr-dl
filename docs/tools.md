@@ -18,15 +18,17 @@ When either is missing, Settings and the add-download panel show **Install requi
 ```
 ~/Library/Application Support/Syphr/bin/   (macOS)
 %APPDATA%\Syphr\bin\                       (Windows)
+~/.config/Syphr/bin/                       (Linux, or $XDG_CONFIG_HOME/Syphr/bin/)
 ```
 
 and points the settings at the installed copies.
 
 | Tool | Source | Verified against |
 | --- | --- | --- |
-| yt-dlp | Latest `yt-dlp_macos` / `yt-dlp.exe` from yt-dlp's GitHub releases | The release's `SHA2-256SUMS` |
+| yt-dlp | Latest `yt-dlp_macos` / `yt-dlp.exe` / `yt-dlp_linux` (`_aarch64` on Arm) from yt-dlp's GitHub releases | The release's `SHA2-256SUMS` |
 | ffmpeg + ffprobe (macOS) | Pinned 9.0.2 builds from ffmpeg.martin-riedl.de, per architecture (arm64 / x86_64) | SHA-256 hashes pinned in `src/tools.rs` |
 | ffmpeg + ffprobe (Windows) | Pinned 9.0.2 essentials build (x64) from gyan.dev's GitHub releases | SHA-256 hash pinned in `src/tools.rs` |
+| ffmpeg (Linux) | Not installed: the installer asks for the distro package instead | — |
 
 Downloads are checked in memory before anything is written, so a file that fails its checksum never reaches the disk. The ffmpeg zips are unpacked with the OS's own tools: `ditto` on macOS, `tar.exe` on Windows (only `ffmpeg.exe` and `ffprobe.exe` are extracted).
 

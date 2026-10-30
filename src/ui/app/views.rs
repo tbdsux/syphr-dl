@@ -131,6 +131,12 @@ impl SyphrApp {
             .footer(
                 SidebarMenu::new()
                     .w_full()
+                    .children(crate::update::available(cx).map(|release| {
+                        let label = crate::update::busy(cx).unwrap_or(format!("Update to {}", release.tag).into());
+                        SidebarMenuItem::new(label)
+                            .icon(Icon::new(Lucide::CircleArrowUp))
+                            .on_click(|_, window, cx| crate::update::install(window.window_handle(), cx))
+                    }))
                     .children(AppSettings::get(cx).show_quick_download.then(|| {
                         SidebarMenuItem::new("Quick download").icon(Icon::new(Lucide::ClipboardPaste)).on_click(
                             cx.listener(|this, _, window, cx| {

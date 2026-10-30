@@ -1,10 +1,10 @@
 # CI and releases
 
-Two GitHub Actions workflows, on `macos-latest` and `windows-latest`.
+Two GitHub Actions workflows, on macOS, Windows and Ubuntu.
 
 ## Test — `.github/workflows/test.yml`
 
-Runs on every push to `main` and every pull request, on both macOS and Windows:
+Runs on every push to `main` and every pull request, on macOS, Windows and Ubuntu (Linux first installs the X11, Wayland and font headers GPUI links against):
 
 ```bash
 cargo fmt --check
@@ -18,13 +18,14 @@ Network tests (`#[ignore]`) don't run in CI.
 
 Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https://gpui-kit.com/docs/packaging/):
 
-1. Fails if the tag doesn't match `version` in `Cargo.toml`. The macOS and Windows builds then run in parallel.
+1. Fails if the tag doesn't match `version` in `Cargo.toml`. The macOS, Windows and Linux builds then run in parallel.
 2. Builds `aarch64-apple-darwin` and `x86_64-apple-darwin` and joins them into one universal binary with `lipo`.
 3. Assembles `Syphr.app` with the icon from `assets/icon/Syphr.icns` and an `Info.plist` (identifier `dev.tbdsux.syphr-dl`, version from the tag, build number from the run number).
 4. Signs it ad hoc and verifies the signature.
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
 6. Alongside, a Windows job builds `syphr-dl.exe` and zips it as `Syphr-vX.Y.Z-windows-x64.zip`.
-7. Once both builds pass, publishes a GitHub release with the DMG, the zip, and generated notes.
+7. A Linux job builds `syphr-dl` on Ubuntu 22.04 (for an older glibc baseline) and packs it as `Syphr-vX.Y.Z-linux-x64.tar.gz`.
+8. Once all builds pass, publishes a GitHub release with the DMG, the zip, the tarball, a `SHA256SUMS` of all three, and generated notes. The in-app updater only offers releases that have `SHA256SUMS` (see [updates.md](updates.md)).
 
 ## Cutting a release
 

@@ -10,7 +10,7 @@ permissions:
 env:
   VERSION: ${{ github.ref_name }}
 
-# The two builds run in parallel; publish waits for both, so a release never goes out half-built.
+# The builds run in parallel; publish waits for all of them, so a release never goes out half-built.
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -102,8 +102,30 @@ jobs:
           name: windows
           path: dist/Syphr-${{ env.VERSION }}-windows-x64.zip
 
+  linux:
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+
+      # Built on the oldest supported Ubuntu so the binary runs on distros with an older glibc.
+      # shortcut: a bare binary in a tarball, with no .desktop entry; package an AppImage or Flatpak if users want menu integration.
+      - name: Build and tar
+        run: |
+          cargo build --release --locked
+          mkdir -p dist
+          tar -czf "dist/Syphr-$VERSION-linux-x64.tar.gz" -C target/release syphr-dl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/Syphr-${{ env.VERSION }}-linux-x64.tar.gz
+
   publish:
-    needs: [macos, windows]
+    needs: [macos, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -113,6 +135,8 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+        # The in-app updater only offers releases with SHA256SUMS and checks the download against it.
         run: |
+          (cd dist && sha256sum * > SHA256SUMS)
           flags=(); [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
           gh release create "$VERSION" dist/* --repo "${{ github.repository }}" --title "Syphr $VERSION" --generate-notes "${flags[@]}"

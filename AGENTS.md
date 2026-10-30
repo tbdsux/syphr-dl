@@ -7,6 +7,7 @@ Download manager app in Rust (edition 2024), built on [GPUI Kit](https://crates.
 - `src/main.rs` — app entry, actions, keybindings, asset source
 - `src/engine/` — link inspection and download jobs (`direct.rs` for HTTP, `ytdlp.rs` for media, `names.rs` for file naming)
 - `src/download.rs` — download state (status, kind, source)
+- `src/update.rs` — checks GitHub releases and installs app updates in place (verified against `SHA256SUMS`)
 - `src/tools.rs` — finds/installs yt-dlp and ffmpeg (pinned SHA-256 checksums)
 - `src/ui/` — windows, downloads table, add-download dialog, settings
 - `docs/` — how the app and engine work; keep it in sync when behavior changes

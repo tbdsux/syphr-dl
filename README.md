@@ -14,6 +14,7 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 - **Queue.** Downloads beyond the concurrent limit wait their turn, oldest first.
 - **Speed limit**, per-download connection count, and a chosen save folder.
 - **Tools installed for you.** If yt-dlp or ffmpeg is missing, Syphr downloads checksum-verified copies into its own folder. Your own installs (Homebrew or PATH) are used first.
+- **Updates itself.** When a new release is out, click **Update to vX.Y.Z** in the sidebar; Syphr downloads it, checks its SHA-256, and restarts.
 - Themes (Catppuccin, Everforest, Flexoki, Gruvbox, Solarized, Tokyo Night), rebindable keyboard shortcuts, and notifications when a download finishes.
 
 ## Install
@@ -21,7 +22,7 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 | OS | Status |
 | --- | --- |
 | macOS 15+ | Prebuilt DMG (Apple Silicon and Intel) |
-| Linux | Build from source |
+| Linux | Prebuilt tarball (x64) |
 | Windows 10+ | Prebuilt zip (x64) |
 
 ### macOS
@@ -38,15 +39,13 @@ Syphr offers to install yt-dlp and ffmpeg for you the first time you add a video
 
 ### Linux
 
-There are no prebuilt Linux packages yet. Build from source (see [Linux build requirements](#linux-1)), then run `target/release/syphr-dl`.
+Download `Syphr-vX.Y.Z-linux-x64.tar.gz` from [Releases](../../releases), unpack it, and run `syphr-dl`. It needs a Wayland or X11 session and a Vulkan driver. On other architectures, build from source (see [Linux build requirements](#linux-1)).
 
-Install yt-dlp and ffmpeg with your package manager. Syphr's built-in tool installer only downloads macOS and Windows builds.
+Syphr can install yt-dlp for you, but install ffmpeg with your package manager:
 
 ```bash
-sudo apt install yt-dlp ffmpeg
+sudo apt install ffmpeg
 ```
-
-Distro packages of yt-dlp often lag behind, and sites break old versions. If video links fail, install the latest release from [yt-dlp's releases](https://github.com/yt-dlp/yt-dlp/releases) instead.
 
 ### Windows
 
@@ -102,6 +101,7 @@ Other distributions need the equivalent development packages.
 - [The download engine](docs/engine.md)
 - [Tools: yt-dlp and ffmpeg](docs/tools.md)
 - [CI and releases](docs/releasing.md)
+- [App updates](docs/updates.md)
 
 ## License
 

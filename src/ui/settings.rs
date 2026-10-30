@@ -6,7 +6,7 @@ use std::{
 
 use gpui_kit::component::{
     Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
@@ -39,6 +39,7 @@ pub struct AppSettings {
     /// Opening the link field fills it with a copied link.
     pub auto_paste: bool,
     pub show_quick_download: bool,
+    pub check_updates: bool,
     /// Download list columns turned off, by column id.
     pub hidden_columns: BTreeSet<String>,
     /// Keys the user changed, by action name; the rest use `Shortcut::default`.
@@ -61,6 +62,7 @@ impl Default for AppSettings {
             notify_on_complete: true,
             auto_paste: true,
             show_quick_download: true,
+            check_updates: true,
             hidden_columns: BTreeSet::new(),
             shortcuts: BTreeMap::new(),
         }
@@ -423,6 +425,38 @@ impl Render for SettingsView {
             ]),
         );
 
+        let updates = SettingPage::new("Updates")
+            .icon(Icon::new(gpui_kit::assets::IconName::CircleArrowUp))
+            .resettable(true)
+            .group(SettingGroup::new().items([
+                SettingItem::new(
+                    format!("Syphr {}", env!("CARGO_PKG_VERSION")),
+                    SettingField::render(|_, _, cx| {
+                        let busy = crate::update::busy(cx);
+                        let button = match crate::update::available(cx) {
+                            Some(release) => Button::new("install-update")
+                                .primary()
+                                .label(busy.clone().unwrap_or(format!("Update to {}", release.tag).into()))
+                                .on_click(|_, window, cx| crate::update::install(window.window_handle(), cx)),
+                            None => Button::new("check-update")
+                                .label(busy.clone().unwrap_or("Check for updates".into()))
+                                .on_click(|_, window, cx| crate::update::check(Some(window.window_handle()), cx)),
+                        };
+                        button.loading(busy.is_some())
+                    }),
+                )
+                .description("Updates come from GitHub releases and are checked against their SHA-256 sums. Syphr restarts to finish."),
+                SettingItem::new(
+                    "Check for updates automatically",
+                    SettingField::switch(
+                        |cx: &App| AppSettings::get(cx).check_updates,
+                        |value: bool, cx: &mut App| AppSettings::update(cx, |s| s.check_updates = value),
+                    )
+                    .default_value(defaults.check_updates),
+                )
+                .description("At launch and every few hours. Beta builds are offered betas too."),
+            ]));
+
         let shortcuts = SettingPage::new("Shortcuts").icon(Icon::new(gpui_kit::assets::IconName::Keyboard)).resettable(true).group(
             SettingGroup::new()
                 .description(
@@ -456,7 +490,10 @@ impl Render for SettingsView {
         );
 
         v_flex().size_full().child(TitleBar::new().child("Settings")).child(
-            div().flex_1().min_h_0().child(Settings::new("settings").pages([appearance, downloads, ytdlp, shortcuts])),
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(Settings::new("settings").pages([appearance, downloads, ytdlp, updates, shortcuts])),
         )
     }
 }

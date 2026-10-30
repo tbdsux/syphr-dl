@@ -18,11 +18,19 @@ use sha2::{Digest, Sha256};
 use crate::engine::{CLIENT, RUNTIME};
 use crate::ui::settings::AppSettings;
 
-const YTDLP_ASSET: &str = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp_macos" };
+const YTDLP_ASSET: &str = if cfg!(windows) {
+    "yt-dlp.exe"
+} else if cfg!(target_os = "macos") {
+    "yt-dlp_macos"
+} else if cfg!(target_arch = "aarch64") {
+    "yt-dlp_linux_aarch64"
+} else {
+    "yt-dlp_linux"
+};
 const YTDLP_SUMS: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS";
 
 /// Pinned builds with their SHA-256, so a changed file on the mirror is rejected. Bump these together.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const FFMPEG_ARM64: [(&str, &str, &str); 2] = [
     (
         "ffmpeg",
@@ -35,7 +43,7 @@ const FFMPEG_ARM64: [(&str, &str, &str); 2] = [
         "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
     ),
 ];
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const FFMPEG_X86_64: [(&str, &str, &str); 2] = [
     (
         "ffmpeg",
@@ -183,7 +191,7 @@ async fn install_ytdlp(dir: PathBuf) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     let builds = match std::env::consts::ARCH {
         "aarch64" => FFMPEG_ARM64,
@@ -205,6 +213,12 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
         make_executable(&dir.join(name))?;
     }
     Ok(dir.join("ffmpeg"))
+}
+
+// shortcut: no pinned Linux build, since unpacking one needs unzip or xz the system may lack; pin a static build if users ask.
+#[cfg(not(any(windows, target_os = "macos")))]
+async fn install_ffmpeg(_: PathBuf) -> Result<PathBuf, String> {
+    Err("install ffmpeg with your package manager, e.g. `sudo apt install ffmpeg`".into())
 }
 
 #[cfg(windows)]
@@ -231,13 +245,13 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     Ok(dir.join("ffmpeg.exe"))
 }
 
-async fn fetch(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let resp = CLIENT.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
     Ok(resp.bytes().await.map_err(|e| e.to_string())?.to_vec())
 }
 
 /// Checked before anything is written, so a bad download never reaches the disk.
-fn verify(bytes: &[u8], expected: &str, name: &str) -> Result<(), String> {
+pub(crate) fn verify(bytes: &[u8], expected: &str, name: &str) -> Result<(), String> {
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual.eq_ignore_ascii_case(expected.trim()) { Ok(()) } else { Err(format!("{name} failed its checksum check")) }
 }
