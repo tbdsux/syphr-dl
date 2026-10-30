@@ -59,6 +59,14 @@ struct Shared {
     name: Mutex<Option<String>>,
     layout: OnceLock<Arc<Layout>>,
     result: Mutex<Option<Result<PathBuf, String>>>,
+    /// Lines for the download's log, taken by the app each tick.
+    log: Mutex<Vec<String>>,
+}
+
+impl Shared {
+    fn log(&self, line: impl Into<String>) {
+        self.log.lock().unwrap().push(line.into());
+    }
 }
 
 struct Layout {
@@ -143,6 +151,10 @@ impl Job {
             }
             _ => Vec::new(),
         }
+    }
+
+    pub fn take_log(&self) -> Vec<String> {
+        std::mem::take(&mut self.shared.log.lock().unwrap())
     }
 
     /// The file name the server gave, once known.
@@ -244,6 +256,7 @@ mod live {
             std::thread::sleep(Duration::from_millis(300));
             peak = peak.max(job.speed());
             if let Some(result) = job.take_result() {
+                job.take_log().iter().for_each(|line| eprintln!("log: {line}"));
                 let path = result.unwrap();
                 eprintln!(
                     "{} {} bytes, parts {:?}, peak {}/s",

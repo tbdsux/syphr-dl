@@ -84,7 +84,7 @@ Closing the window while anything is downloading or queued asks first.
 
 The list and a log per download live in SQLite at `downloads.db` in Syphr's folder (see Settings below), through `rusqlite` with SQLite built in. `SyphrApp::new` loads it, newest first, and continues ids from the highest one. Every `sync_table` calls `Store::sync`, which writes only rows whose saved fields changed (speed and part fractions aren't saved, so a running download rewrites just its byte count) and deletes removed rows with their log, in one transaction.
 
-The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. Nothing in the UI shows it yet; `Store::log_for` reads it.
+The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The log button in the details card shows it, newest first.
 
 Downloads that were running or queued when Syphr quit start again on launch. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
 

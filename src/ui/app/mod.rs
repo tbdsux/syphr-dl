@@ -79,6 +79,8 @@ pub struct SyphrApp {
     /// Engine state per download id; kept while paused so a resume continues.
     jobs: HashMap<u64, Job>,
     store: Store,
+    /// Whether the details card shows the download's log.
+    show_log: bool,
     _pump: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -153,6 +155,7 @@ impl SyphrApp {
             next_id: store.next_id(),
             downloads,
             store,
+            show_log: false,
             jobs: HashMap::new(),
             _pump: pump,
             filter: Filter::All,
@@ -358,6 +361,9 @@ impl SyphrApp {
         // Oldest first, so the queue runs in the order downloads were added.
         for d in self.downloads.iter_mut().rev() {
             let job = self.jobs.entry(d.id).or_default();
+            for line in job.take_log() {
+                self.store.log(d.id, &line);
+            }
             if let Some(result) = job.take_result() {
                 changed = true;
                 d.bytes_per_sec = 0;

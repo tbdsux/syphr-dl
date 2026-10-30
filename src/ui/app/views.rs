@@ -10,6 +10,7 @@ use gpui_kit::component::{
     kbd::Kbd,
     popover::Popover,
     progress::Progress,
+    scroll::ScrollableElement as _,
     sidebar::{Sidebar, SidebarGroup, SidebarItem as _, SidebarMenu, SidebarMenuItem},
     status_bar::StatusBar,
     table::DataTable,
@@ -210,6 +211,7 @@ impl SyphrApp {
     fn render_detail(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border, surface) = (theme.muted_foreground, theme.border, theme.secondary);
+        let (radius, mono) = (theme.radius, theme.mono_font_family.clone());
         let (label, icon, next) = next_step(d.status);
         let id = d.id;
         let url = d.url.clone();
@@ -254,6 +256,18 @@ impl SyphrApp {
                                 Button::new("detail-step").small().outline().icon(icon).label(label).on_click(
                                     cx.listener(move |this, _, window, cx| this.run_step(id, next, window, cx)),
                                 ),
+                            )
+                            .child(
+                                Button::new("detail-log")
+                                    .small()
+                                    .ghost()
+                                    .icon(Icon::new(Lucide::ScrollText))
+                                    .selected(self.show_log)
+                                    .tooltip(if self.show_log { "Hide log" } else { "Show log" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_log = !this.show_log;
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 Button::new("detail-copy")
@@ -310,6 +324,29 @@ impl SyphrApp {
                     ))
                     .child(stat("Save to", text(d.folder.to_string()))),
             )
+            .when(self.show_log, |this| {
+                let lines = self.store.log_for(id).unwrap_or_default();
+                // Newest first, so a running download's latest line is in view without scrolling.
+                this.child(
+                    v_flex()
+                        .max_h(rems(10.))
+                        .overflow_y_scrollbar()
+                        .gap_0p5()
+                        .p_2()
+                        .rounded(radius)
+                        .bg(surface)
+                        .font_family(mono)
+                        .text_xs()
+                        .when(lines.is_empty(), |this| this.text_color(muted).child("Nothing logged yet"))
+                        .children(lines.into_iter().rev().map(|(at, message)| {
+                            h_flex()
+                                .gap_3()
+                                .items_start()
+                                .child(div().flex_none().text_color(muted).child(at))
+                                .child(div().flex_1().min_w_0().child(message))
+                        })),
+                )
+            })
     }
 
     fn render_bulk_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

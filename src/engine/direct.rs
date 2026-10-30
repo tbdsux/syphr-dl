@@ -20,7 +20,7 @@ use super::{CLIENT, Layout, Part, Request, Shared, err};
 const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
 
-pub(super) async fn run_direct(request: &Request, shared: &Shared) -> Result<PathBuf, String> {
+pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Result<PathBuf, String> {
     let layout = match shared.layout.get() {
         Some(layout) => layout,
         None => {
@@ -43,8 +43,8 @@ pub(super) async fn run_direct(request: &Request, shared: &Shared) -> Result<Pat
     let limit = request.limit_bps / pending.len().max(1) as u64;
     let mut set = JoinSet::new();
     for i in pending {
-        let (url, file, layout) = (request.url.clone(), file.clone(), layout.clone());
-        set.spawn(async move { fetch_part_with_retries(&url, &file, &layout, i, limit).await });
+        let (url, file, layout, shared) = (request.url.clone(), file.clone(), layout.clone(), shared.clone());
+        set.spawn(async move { fetch_part_with_retries(&url, &file, &layout, i, limit, &shared).await });
     }
     while let Some(joined) = set.join_next().await {
         joined.map_err(err)??;
@@ -71,6 +71,8 @@ pub struct LinkInfo {
     pub total: Option<u64>,
     pub ranged: bool,
     pub content_type: Option<String>,
+    /// The request and what came back, for the download's log.
+    pub summary: String,
 }
 
 /// One tiny ranged request tells us the size, the name, and whether parts are possible.
@@ -95,12 +97,25 @@ pub async fn inspect(url: &str) -> Result<LinkInfo, String> {
     };
     let ranged = ranged && total.is_some();
     let name = response_file_name(&resp);
-    let content_type = resp.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(Into::into);
-    Ok(LinkInfo { name, total, ranged, content_type })
+    let content_type: Option<String> =
+        resp.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(Into::into);
+    let mut summary = format!("→ {}", resp.status());
+    if resp.url().as_str() != url {
+        summary += &format!(" from {}", resp.url());
+    }
+    summary += &format!(
+        " · {} · {} · {}",
+        total.map(crate::download::format_bytes).unwrap_or_else(|| "size unknown".into()),
+        content_type.as_deref().unwrap_or("no type"),
+        if ranged { "ranges supported" } else { "no ranges" },
+    );
+    Ok(LinkInfo { name, total, ranged, content_type, summary })
 }
 
 async fn probe(request: &Request, shared: &Shared) -> Result<Layout, String> {
-    let LinkInfo { name, total, ranged, .. } = inspect(&request.url).await?;
+    shared.log(format!("GET {} (Range: bytes=0-0)", request.url));
+    let LinkInfo { name, total, ranged, summary, .. } = inspect(&request.url).await?;
+    shared.log(summary);
     let name = chosen_name(request.file_name.as_deref(), name);
 
     fs::create_dir_all(&request.folder).map_err(|e| format!("Can't use {}: {e}", request.folder.display()))?;
@@ -112,6 +127,10 @@ async fn probe(request: &Request, shared: &Shared) -> Result<Layout, String> {
         None => vec![Part { start: 0, end: u64::MAX, done: AtomicU64::new(0) }],
     };
     shared.total.store(total.unwrap_or(0), Relaxed);
+    shared.log(match parts.len() {
+        1 => format!("Saving to {}", path.display()),
+        n => format!("Saving to {} over {n} connections", path.display()),
+    });
     *shared.name.lock().unwrap() = Some(name);
     Ok(Layout { path, ranged, parts })
 }
@@ -126,14 +145,24 @@ fn split(total: u64, max: u64) -> Vec<Part> {
         .collect()
 }
 
-async fn fetch_part_with_retries(url: &str, file: &File, layout: &Layout, i: usize, limit: u64) -> Result<(), String> {
+async fn fetch_part_with_retries(
+    url: &str,
+    file: &File,
+    layout: &Layout,
+    i: usize,
+    limit: u64,
+    shared: &Shared,
+) -> Result<(), String> {
     let mut attempt = 0;
     loop {
-        match fetch_part(url, file, layout, i, limit).await {
-            Ok(()) => return Ok(()),
+        match fetch_part(url, file, layout, i, limit, shared).await {
+            Ok(()) => {
+                shared.log(format!("Part {}: done", i + 1));
+                return Ok(());
+            }
             Err(e) if attempt < RETRIES => {
                 attempt += 1;
-                eprintln!("part {i} failed ({e}), retry {attempt}");
+                shared.log(format!("Part {} failed ({e}), retry {attempt} of {RETRIES}", i + 1));
                 tokio::time::sleep(Duration::from_secs(1 << attempt.min(4))).await;
             }
             Err(e) => return Err(e),
@@ -141,18 +170,29 @@ async fn fetch_part_with_retries(url: &str, file: &File, layout: &Layout, i: usi
     }
 }
 
-async fn fetch_part(url: &str, file: &File, layout: &Layout, i: usize, limit: u64) -> Result<(), String> {
+async fn fetch_part(
+    url: &str,
+    file: &File,
+    layout: &Layout,
+    i: usize,
+    limit: u64,
+    shared: &Shared,
+) -> Result<(), String> {
     let part = &layout.parts[i];
     let mut req = CLIENT.get(url);
-    if layout.ranged {
-        let from = part.start + part.done.load(Relaxed);
-        req = req.header(header::RANGE, format!("bytes={from}-{}", part.end));
+    let range = if layout.ranged {
+        let range = format!("bytes={}-{}", part.start + part.done.load(Relaxed), part.end);
+        req = req.header(header::RANGE, &range);
+        format!("Range: {range}")
     } else {
         // No ranges: the only way to continue is from the start.
         part.done.store(0, Relaxed);
         file.set_len(0).map_err(err)?;
-    }
-    let mut resp = req.send().await.map_err(err)?.error_for_status().map_err(err)?;
+        "no range, from the start".into()
+    };
+    let resp = req.send().await.map_err(err)?;
+    shared.log(format!("Part {}: GET ({range}) → {}", i + 1, resp.status()));
+    let mut resp = resp.error_for_status().map_err(err)?;
     if layout.ranged && resp.status() != StatusCode::PARTIAL_CONTENT {
         return Err("The server stopped accepting partial requests.".into());
     }

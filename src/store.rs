@@ -162,10 +162,12 @@ impl Store {
         }
     }
 
-    /// Oldest first, as (unix seconds, message).
-    #[allow(dead_code)] // shortcut: nothing shows the log yet; read it here once a log view exists.
-    pub fn log_for(&self, id: u64) -> rusqlite::Result<Vec<(i64, String)>> {
-        let mut stmt = self.conn.prepare("SELECT at, message FROM log WHERE download_id = ?1 ORDER BY id")?;
+    /// Oldest first, as (local "HH:MM:SS", message).
+    pub fn log_for(&self, id: u64) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT strftime('%H:%M:%S', at, 'unixepoch', 'localtime'), message
+             FROM log WHERE download_id = ?1 ORDER BY id",
+        )?;
         stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
     }
 }

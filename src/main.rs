@@ -45,7 +45,10 @@ actions!(
 actions!(downloads, [TogglePause, Retry, CopyLinks, Remove, SelectAll, ClearSelection]);
 
 // The default bundle only has the component icons; these Lucide extras are used for categories.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Film, Music, Package, FileArchive, ListChecks, Keyboard, CircleArrowUp]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [Film, Music, Package, FileArchive, ListChecks, Keyboard, CircleArrowUp, ScrollText]
+);
 
 /// The app icon, for `img()`.
 pub const LOGO: &str = "icon/icon.png";

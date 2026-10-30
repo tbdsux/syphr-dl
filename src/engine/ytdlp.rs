@@ -222,6 +222,8 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
         "--newline",
         "--progress",
         "--no-warnings",
+        // `--print` implies quiet; keep yt-dlp's "[extractor] ..." lines for the log.
+        "--no-quiet",
     ])
     .args([
         "--progress-template",
@@ -263,6 +265,7 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
                         shared.total.fetch_max(base + total, Relaxed);
                     }
                 }
+                None if line.starts_with('[') => shared.log(line),
                 None if !line.trim().is_empty() => path = Some(PathBuf::from(line.trim())),
                 None => {}
             }
@@ -273,6 +276,10 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
         let mut last = None;
         while let Ok(Some(line)) = stderr.next_line().await {
             if !line.trim().is_empty() {
+                // The last error becomes the result, which the app logs itself.
+                if !line.starts_with("ERROR: ") {
+                    shared.log(line.trim());
+                }
                 last = Some(line.trim().trim_start_matches("ERROR: ").to_string());
             }
         }
