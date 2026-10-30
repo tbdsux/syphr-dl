@@ -1,6 +1,6 @@
 [package]
 name = "syphr-dl"
-version = "0.2.0-beta.1"
+version = "0.3.0-beta.1"
 edition = "2024"
 description = "Download manager for direct links and media pages"
 authors = ["Joshue Abance"]
