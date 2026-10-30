@@ -313,9 +313,34 @@ impl SyphrApp {
                 .on_ok(move |_, _, cx| {
                     view.update(cx, |this, cx| {
                         let checked = std::mem::take(&mut this.checked);
-                        this.downloads.retain(|d| !checked.contains(&d.id));
-                        this.sync_table(cx);
+                        this.remove_rows(&checked, cx);
                     });
+                    true
+                })
+        });
+    }
+
+    pub fn confirm_delete(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
+        let (name, path) = (d.name.clone(), d.path.clone());
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (view, path) = (view.clone(), path.clone());
+            alert
+                .title(format!("Delete “{name}”?"))
+                .description("Removes it from the list and deletes the file from disk.")
+                .confirm()
+                .ok_text("Delete")
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, window, cx| {
+                    if let Some(path) = &path
+                        && let Err(e) = std::fs::remove_file(path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        window.push_notification(format!("Couldn't delete the file: {e}"), cx);
+                        return true;
+                    }
+                    view.update(cx, |this, cx| this.remove(id, cx));
                     true
                 })
         });
@@ -354,8 +379,6 @@ impl SyphrApp {
             crate::tools::resolve(&settings.ffmpeg_path),
             settings.notify_on_complete,
         );
-        // Dropping a job aborts it, which covers rows removed from the list.
-        self.jobs.retain(|id, _| self.downloads.iter().any(|d| d.id == *id));
         let mut active = self.jobs.values().filter(|j| j.is_running()).count();
         let mut changed = false;
         // Oldest first, so the queue runs in the order downloads were added.
@@ -391,6 +414,7 @@ impl SyphrApp {
             match d.status {
                 Status::Downloading | Status::Queued if !running && active < max => {
                     job.start(Request {
+                        id: d.id,
                         url: d.url.to_string(),
                         folder: expand_home(&d.folder),
                         selector: d.selector.clone(),
@@ -444,8 +468,16 @@ impl SyphrApp {
     }
 
     pub fn remove(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.downloads.retain(|d| d.id != id);
-        self.checked.remove(&id);
+        self.remove_rows(&BTreeSet::from([id]), cx);
+    }
+
+    /// Drops the rows with their jobs and unfinished files; saved files stay.
+    fn remove_rows(&mut self, ids: &BTreeSet<u64>, cx: &mut Context<Self>) {
+        for &id in ids {
+            crate::engine::discard(id, self.jobs.remove(&id));
+        }
+        self.downloads.retain(|d| !ids.contains(&d.id));
+        self.checked.retain(|id| !ids.contains(id));
         self.sync_table(cx);
     }
 

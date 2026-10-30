@@ -36,6 +36,8 @@ pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct Request {
+    /// The download's id; its unfinished files live under it.
+    pub id: u64,
     pub url: String,
     pub folder: PathBuf,
     /// yt-dlp `-f` selector; None downloads the link directly.
@@ -183,6 +185,23 @@ impl Drop for Job {
     }
 }
 
+/// Stops a removed download and deletes its unfinished files.
+pub fn discard(id: u64, job: Option<Job>) {
+    RUNTIME.spawn(async move {
+        if let Some(task) = job.and_then(|mut j| j.task.take()) {
+            task.abort();
+            let _ = task.await;
+        }
+        // A killed yt-dlp can hold its files open a moment longer, which blocks deleting them on Windows.
+        for _ in 0..5 {
+            match std::fs::remove_dir_all(names::partial_dir(id)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => tokio::time::sleep(Duration::from_secs(1)).await,
+                _ => return,
+            }
+        }
+    });
+}
+
 /// The folder holding unfinished downloads, and the bytes they take.
 pub fn partial_usage() -> (PathBuf, u64) {
     fn size(path: &std::path::Path) -> u64 {
@@ -213,6 +232,7 @@ mod tests {
     fn merged_formats_need_ffmpeg() {
         let mut job = Job::default();
         job.start(Request {
+            id: u64::MAX,
             url: "https://www.youtube.com/watch?v=x".into(),
             folder: std::env::temp_dir(),
             selector: Some("bv*+ba/b".into()),
@@ -242,6 +262,7 @@ mod live {
         let folder = std::env::temp_dir().join(format!("syphr-live-{}", std::process::id()));
         let mut job = Job::default();
         job.start(Request {
+            id: u64::MAX - 1,
             url: url.into(),
             folder,
             selector: selector.map(Into::into),
@@ -282,6 +303,7 @@ mod live {
     #[ignore = "network"]
     fn resumes_after_stop() {
         let request = Request {
+            id: u64::MAX - 2,
             url: "https://proof.ovh.net/files/10Mb.dat".into(),
             folder: std::env::temp_dir().join(format!("syphr-resume-{}", std::process::id())),
             file_name: None,

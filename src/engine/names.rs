@@ -2,7 +2,6 @@
 
 use std::{
     fs,
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
 };
 
@@ -119,19 +118,17 @@ pub(super) fn file_name_of(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Unfinished files live in Syphr's own folder, one subfolder per destination folder so names never collide.
-pub(super) fn partial_dir(folder: &Path) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    folder.hash(&mut hasher);
-    partial_root().join(format!("{:016x}", hasher.finish()))
+/// Unfinished files live in Syphr's own folder, one subfolder per download so similar links never share parts.
+pub(super) fn partial_dir(id: u64) -> PathBuf {
+    partial_root().join(id.to_string())
 }
 
 pub(super) fn partial_root() -> PathBuf {
     crate::ui::settings::data_dir().join("partial")
 }
 
-pub(super) fn part_path(path: &Path) -> PathBuf {
-    partial_dir(path.parent().unwrap_or(Path::new(""))).join(format!("{}.part", file_name_of(path)))
+pub(super) fn part_path(id: u64, path: &Path) -> PathBuf {
+    partial_dir(id).join(format!("{}.part", file_name_of(path)))
 }
 
 /// Rename, or copy then delete when the destination is on another volume.
@@ -145,14 +142,14 @@ pub(super) fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::remove_file(from)
 }
 
-/// "name.zip", then "name (1).zip", … skipping names whose file or partial file exists.
+/// "name.zip", then "name (1).zip", … skipping names whose file exists.
 pub(super) fn unique_path(folder: &Path, name: &str) -> PathBuf {
     let path = Path::new(name);
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_string());
     let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     (0..)
         .map(|n| if n == 0 { folder.join(name) } else { folder.join(format!("{stem} ({n}){ext}")) })
-        .find(|p| !p.exists() && !part_path(p).exists())
+        .find(|p| !p.exists())
         .expect("an unbounded search finds a free name")
 }
 
@@ -179,15 +176,13 @@ mod tests {
     }
 
     #[test]
-    fn unique_names_skip_files_and_partials() {
+    fn unique_names_skip_existing_files() {
         let dir = std::env::temp_dir().join(format!("syphr-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         File::create(dir.join("a.zip")).unwrap();
-        let part = part_path(&dir.join("a (1).zip"));
-        fs::create_dir_all(part.parent().unwrap()).unwrap();
-        File::create(&part).unwrap();
+        File::create(dir.join("a (1).zip")).unwrap();
         assert_eq!(unique_path(&dir, "a.zip"), dir.join("a (2).zip"));
         fs::remove_dir_all(&dir).unwrap();
-        fs::remove_dir_all(part.parent().unwrap()).unwrap();
+        assert_ne!(part_path(1, Path::new("a.zip")), part_path(2, Path::new("a.zip")));
     }
 }

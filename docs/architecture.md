@@ -59,7 +59,7 @@ Until a column is resized, Name fills the table. After that, the Actions column 
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
 3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row.
 
-Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row drops its `Job`, which aborts it.
+Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
 Settings such as the speed limit and connection count apply to downloads started after the change.
 

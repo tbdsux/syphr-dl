@@ -21,6 +21,7 @@ const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
 
 pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Result<PathBuf, String> {
+    let fresh = shared.layout.get().is_none();
     let layout = match shared.layout.get() {
         Some(layout) => layout,
         None => {
@@ -28,14 +29,15 @@ pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Resul
             shared.layout.get_or_init(|| layout)
         }
     };
-    let part_path = part_path(&layout.path);
+    let part_path = part_path(request.id, &layout.path);
     if !part_path.exists() {
         // The partial file was removed while paused, so earlier progress is gone.
         layout.parts.iter().for_each(|p| p.done.store(0, Relaxed));
     }
     let part_dir = part_path.parent().expect("part files live in a folder");
     fs::create_dir_all(part_dir).map_err(err)?;
-    let file = Arc::new(OpenOptions::new().create(true).write(true).truncate(false).open(&part_path).map_err(err)?);
+    // A fresh layout (first start, or after a restart) knows of no progress, so stale bytes go.
+    let file = Arc::new(OpenOptions::new().create(true).write(true).truncate(fresh).open(&part_path).map_err(err)?);
 
     let pending: Vec<usize> = (0..layout.parts.len())
         .filter(|&i| !layout.ranged || layout.parts[i].done.load(Relaxed) < layout.parts[i].len())
@@ -59,8 +61,7 @@ pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Resul
         layout.path.clone()
     };
     move_file(&part_path, &path).map_err(err)?;
-    // Fails while another download is still using it, which is fine.
-    let _ = fs::remove_dir(part_dir);
+    let _ = fs::remove_dir_all(part_dir);
     Ok(path)
 }
 

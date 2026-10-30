@@ -315,6 +315,7 @@ mod live {
         }
         let mut job = Job::default();
         job.start(Request {
+            id: u64::MAX - 3,
             url: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(),
             folder: dir.join("out"),
             selector: Some("bv*[height=240]+ba/b[height=240]".into()),

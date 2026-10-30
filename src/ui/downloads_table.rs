@@ -473,7 +473,7 @@ impl TableDelegate for DownloadsTable {
             _ => {
                 let (label, icon, next) = next_step(d.status);
                 let (app, app2) = (self.app.clone(), self.app.clone());
-                let url = d.url.clone();
+                let (url, saved) = (d.url.clone(), d.path.is_some());
                 // Right-aligned: this column takes the table's slack once a column is resized.
                 h_flex()
                     .w_full()
@@ -497,13 +497,21 @@ impl TableDelegate for DownloadsTable {
                                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.to_string())),
                                 ))
                                 .separator()
-                                .item(
-                                    PopupMenuItem::new("Remove from list").icon(IconName::Delete).on_click(
-                                        move |_, _, cx| {
-                                            app.update(cx, |this, cx| this.remove(id, cx)).ok();
-                                        },
-                                    ),
-                                )
+                                .item(PopupMenuItem::new("Remove from list").icon(IconName::Delete).on_click({
+                                    let app = app.clone();
+                                    move |_, _, cx| {
+                                        app.update(cx, |this, cx| this.remove(id, cx)).ok();
+                                    }
+                                }))
+                                .when(saved, |menu| {
+                                    menu.item(
+                                        PopupMenuItem::new("Remove and delete file…").icon(IconName::Delete).on_click(
+                                            move |_, window, cx| {
+                                                app.update(cx, |this, cx| this.confirm_delete(id, window, cx)).ok();
+                                            },
+                                        ),
+                                    )
+                                })
                             }),
                     )
                     .into_any_element()

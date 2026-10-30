@@ -383,7 +383,7 @@ impl Render for SettingsView {
                             )
                     }),
                 )
-                .description("Partial files kept so paused downloads can resume. Removed downloads leave theirs here."),
+                .description("Partial files kept so paused downloads can resume. Removing a download deletes its own."),
             ]),
         );
 
