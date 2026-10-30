@@ -6378,7 +6378,7 @@ dependencies = [
 
 [[package]]
 name = "syphr-dl"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "async-channel",
  "gpui-kit",
