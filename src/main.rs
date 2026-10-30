@@ -10,6 +10,7 @@ macro_rules! secondary {
 
 mod download;
 mod engine;
+mod store;
 mod tools;
 mod tray;
 mod ui;

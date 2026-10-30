@@ -16,6 +16,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/downloads_table.rs` | The downloads table (columns, sorting, row rendering) |
 | `src/ui/settings.rs` | `AppSettings`, the settings window, themes and appearance |
+| `src/store.rs` | `Store`: the download list and per-download log in SQLite |
 | `src/update.rs` | Checks GitHub for newer releases and installs them. See [updates.md](updates.md) |
 | `src/tray.rs` | The menu bar icon (macOS) and notification-area icon (Windows, Linux) |
 
@@ -79,6 +80,14 @@ A finished or failed download shows an in-window toast when Syphr is focused, ot
 
 Closing the window while anything is downloading or queued asks first.
 
+## Saved list and log
+
+The list and a log per download live in SQLite at `downloads.db` in Syphr's folder (see Settings below), through `rusqlite` with SQLite built in. `SyphrApp::new` loads it, newest first, and continues ids from the highest one. Every `sync_table` calls `Store::sync`, which writes only rows whose saved fields changed (speed and part fractions aren't saved, so a running download rewrites just its byte count) and deletes removed rows with their log, in one transaction.
+
+The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. Nothing in the UI shows it yet; `Store::log_for` reads it.
+
+Downloads that were running or queued when Syphr quit start again on launch. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
+
 ## Settings
 
 Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Support/Syphr` on macOS, `%APPDATA%\Syphr` on Windows, `$XDG_CONFIG_HOME/Syphr` (or `~/.config/Syphr`) on Linux. An unreadable file is ignored (and logged) and defaults are used.
@@ -98,6 +107,5 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 
 ## Limits
 
-- The download list lives in memory only; it's empty after a restart. Partial files stay on disk.
 - The tool installer only has macOS and Windows builds; on Linux, install yt-dlp and ffmpeg yourself.
 - On Linux, *Show in folder* opens the folder without selecting the file.

@@ -15,6 +15,7 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, Source, Status};
 use crate::engine::{Job, Request};
+use crate::store::Store;
 use crate::ui::add_download::{AddDownload, AddEvent, kind_for};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
@@ -77,6 +78,7 @@ pub struct SyphrApp {
     next_id: u64,
     /// Engine state per download id; kept while paused so a resume continues.
     jobs: HashMap<u64, Job>,
+    store: Store,
     _pump: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -142,9 +144,15 @@ impl SyphrApp {
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let mut store = Store::open_default();
+        let downloads = store.load().unwrap_or_else(|err| {
+            eprintln!("Couldn't read the download list: {err}");
+            Vec::new()
+        });
         let mut this = Self {
-            next_id: 1,
-            downloads: Vec::new(),
+            next_id: store.next_id(),
+            downloads,
+            store,
             jobs: HashMap::new(),
             _pump: pump,
             filter: Filter::All,
@@ -175,6 +183,7 @@ impl SyphrApp {
 
     /// Pushes the filtered list into the table and keeps the selection on the same download.
     pub fn sync_table(&mut self, cx: &mut Context<Self>) {
+        self.store.sync(&self.downloads);
         let query = self.search.read(cx).value().to_lowercase();
         let rows: Vec<Download> = self
             .downloads
@@ -359,6 +368,7 @@ impl SyphrApp {
                         d.total_bytes = Some(d.received_bytes);
                         d.fragments.clear();
                         d.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
+                        self.store.log(d.id, &format!("Saved to {}", path.display()));
                         d.path = Some(path);
                         if notify {
                             announce(d.id, "Download complete", d.name.clone(), window, cx);
@@ -366,6 +376,7 @@ impl SyphrApp {
                     }
                     Err(message) => {
                         d.status = Status::Failed;
+                        self.store.log(d.id, &message);
                         announce(d.id, "Download failed", format!("{}: {message}", d.name).into(), window, cx);
                     }
                 }
