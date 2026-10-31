@@ -276,6 +276,8 @@ mod tests {
         assert_eq!((d.id, d.status, d.kind, d.source), (2, Status::Completed, Kind::Video, Source::YtDlp));
         assert_eq!((d.format.as_deref(), d.selector.as_deref(), d.bytes_per_sec), (Some("1080p"), Some("bv*"), 0));
         assert_eq!(reopened.next_id(), 3);
+        // Windows won't delete a database that's still open.
+        drop((store, reopened));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
