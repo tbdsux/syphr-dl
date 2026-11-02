@@ -47,14 +47,16 @@ impl SyphrApp {
             })
             .cleanable(true)
             .w(rems(34.));
-        let (on_change, on_escape) = (add.clone(), add.clone());
+        let (on_change, on_escape, on_prepaint) = (add.clone(), add.clone(), add.clone());
         let popover = Popover::new("add-panel")
             .anchor(Anchor::TopCenter)
             .open(open)
+            // An opening popover takes focus unless told otherwise; typing has to stay in the field.
+            .track_focus(&url.read(cx).focus_handle(cx))
             .on_open_change(move |open, window, cx| {
-                // Clicks on the field itself also arrive here; keep the panel up while it has focus.
-                let field_focused = on_change.read(cx).url().read(cx).focus_handle(cx).is_focused(window);
-                if *open || !field_focused {
+                // Clicks on the field itself also arrive here; keep the panel up for those.
+                let on_field = on_change.read(cx).field_bounds.contains(&window.mouse_position());
+                if *open || !on_field {
                     on_change.update(cx, |add, cx| add.set_open(*open, cx));
                 }
             })
@@ -89,6 +91,9 @@ impl SyphrApp {
                                     on_escape.update(cx, |add, cx| add.set_open(false, cx));
                                     window.blur(cx);
                                 }
+                            })
+                            .on_prepaint(move |bounds, _, cx| {
+                                on_prepaint.update(cx, |add, _| add.field_bounds = bounds);
                             })
                             .child(popover),
                     ),

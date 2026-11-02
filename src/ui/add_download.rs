@@ -38,6 +38,8 @@ pub struct AddDownload {
     name: Entity<InputState>,
     /// The guess last put in `name`; a different value means the user typed their own.
     auto_name: String,
+    /// Where the link field was last drawn, to tell a click on it from one outside the panel.
+    pub field_bounds: Bounds<Pixels>,
     open: bool,
     lookup: Lookup,
     choice: usize,
@@ -61,6 +63,7 @@ impl AddDownload {
             folder,
             name,
             auto_name: String::new(),
+            field_bounds: Bounds::default(),
             open: false,
             lookup: Lookup::NotNeeded,
             choice: 0,
