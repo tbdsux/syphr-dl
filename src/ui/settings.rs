@@ -503,7 +503,8 @@ impl Render for SettingsView {
                 })),
         );
 
-        v_flex().size_full().child(TitleBar::new().child("Settings")).child(
+        let chrome = cx.theme().sidebar;
+        v_flex().size_full().child(TitleBar::new().bg(chrome).border_color(chrome).child("Settings")).child(
             div().flex_1().min_h_0().child(
                 Settings::new("settings")
                     .sidebar_width(cx.theme().font_size * 18.)
