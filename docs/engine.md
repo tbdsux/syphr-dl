@@ -20,7 +20,7 @@ pub struct Request {
 }
 ```
 
-A `Job` runs one request on a shared 4-thread Tokio runtime (`RUNTIME`) with one shared `reqwest` client (`CLIENT`: 15 s connect timeout, 30 s read timeout, `Syphr/<version>` user agent).
+A `Job` runs one request on a shared 4-thread Tokio runtime (`RUNTIME`) with one shared `reqwest` client (`client()`: 15 s connect timeout, 30 s read timeout, `Syphr/<version>` user agent).
 
 The UI never awaits a job. It polls:
 
@@ -35,6 +35,14 @@ The UI never awaits a job. It polls:
 | `speed()` | Smoothed bytes per second (exponential average: 60 % previous, 40 % latest) |
 
 State shared between the task and the UI (`Shared`) is atomics and mutexes: total, received, the server's file name, the part layout, and the result. Because the layout lives in `Shared`, not the task, it survives `stop()`, which is what makes resume work.
+
+## Proxy
+
+`AppSettings::proxy_url` turns Settings → *Proxy* (type, host, port, username, password) into a link, percent-encoding the login. `set_proxy` rebuilds the client from it when a field changes and at launch. yt-dlp gets the same link through `--proxy` for lookups, downloads and `-U`. Tool installs and update checks use the client, so they follow it too.
+
+HTTPS means TLS to the proxy itself, which many providers, Webshare included, don't offer; an HTTP proxy still carries `https://` links, encrypted end to end. The types are HTTP, HTTPS, SOCKS5 (`socks5://`, which resolves host names on this machine, so those lookups skip the proxy) and SOCKS5 with proxy DNS (`socks5h://`, which leaves them to the proxy).
+
+An invalid host or type is kept as an error that every request returns, so a typo can't send traffic around the proxy. Type *None* leaves reqwest and yt-dlp to their defaults, the `HTTP_PROXY`-style environment variables. A running download keeps its yt-dlp process and open connections until it stops.
 
 ## Direct downloads
 

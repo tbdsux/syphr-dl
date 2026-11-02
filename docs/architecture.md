@@ -100,6 +100,7 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 | Max concurrent | 3 | Downloads running at once |
 | Speed limit | 0 (unlimited) | KB/s, shared across one download's connections |
 | Connections | 8 | Byte-range parts for direct links, `-N` for yt-dlp |
+| Proxy | None | Type, host, port, username, password for all traffic; the password is stored as plain text. See [engine.md](engine.md#proxy) |
 | yt-dlp / ffmpeg path | `yt-dlp` / `ffmpeg` | Bare names are searched; see [tools.md](tools.md) |
 | Notify on complete | on | |
 | Auto paste | on | |

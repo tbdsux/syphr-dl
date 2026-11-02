@@ -8,13 +8,13 @@ pub mod ytdlp;
 use std::{
     path::PathBuf,
     sync::{
-        Arc, LazyLock, Mutex, OnceLock,
+        Arc, LazyLock, Mutex, OnceLock, RwLock,
         atomic::{AtomicU64, Ordering::Relaxed},
     },
     time::{Duration, Instant},
 };
 
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use tokio::task::JoinHandle;
 
 use direct::run_direct;
@@ -25,14 +25,38 @@ pub(crate) static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| 
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().expect("tokio runtime")
 });
 
-pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
+/// The client and proxy for new connections. A bad proxy is kept as an error, so nothing quietly connects without it.
+static NETWORK: LazyLock<RwLock<Result<(Client, String), String>>> = LazyLock::new(|| RwLock::new(network("")));
+
+fn network(proxy: &str) -> Result<(Client, String), String> {
+    let mut builder = Client::builder()
         .user_agent(concat!("Syphr/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
-        .read_timeout(Duration::from_secs(30))
-        .build()
-        .expect("http client")
-});
+        .read_timeout(Duration::from_secs(30));
+    if !proxy.is_empty() {
+        builder = builder.proxy(Proxy::all(proxy).map_err(err)?);
+    }
+    Ok((builder.build().map_err(err)?, proxy.to_string()))
+}
+
+/// Applies to connections made from now on. Empty uses the system's `HTTP_PROXY`-style variables, if any.
+pub fn set_proxy(proxy: Result<String, String>) {
+    *NETWORK.write().unwrap() = proxy.and_then(|proxy| network(&proxy));
+}
+
+pub(crate) fn client() -> Result<Client, String> {
+    NETWORK.read().unwrap().as_ref().map(|(client, _)| client.clone()).map_err(Clone::clone)
+}
+
+/// The proxy to hand to yt-dlp; None when none is set.
+pub(crate) fn proxy() -> Result<Option<String>, String> {
+    NETWORK
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|(_, proxy)| Some(proxy.clone()).filter(|p| !p.is_empty()))
+        .map_err(Clone::clone)
+}
 
 #[derive(Clone)]
 pub struct Request {
@@ -220,13 +244,100 @@ pub fn partial_usage() -> (PathBuf, u64) {
     (root, bytes)
 }
 
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
+/// The whole cause chain: reqwest's own message only says the request failed, not that a proxy refused it.
+fn err(e: impl std::error::Error) -> String {
+    let mut message = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        message += &format!(": {cause}");
+        source = cause.source();
+    }
+    message
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+    };
+
+    #[test]
+    fn requests_go_through_the_proxy() {
+        // socks5 resolves names locally before connecting, so it gets an address; socks5h leaves them to the proxy.
+        for (scheme, target, first_byte) in [
+            ("http", "http://syphr.invalid/", b'G'),
+            ("socks5", "http://127.0.0.1:9/", 5),
+            ("socks5h", "http://syphr.invalid/", 5),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let (client, _) = network(&format!("{scheme}://{}", listener.local_addr().unwrap())).unwrap();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                tx.send(byte[0]).unwrap();
+                // Holds the connection open until the test has its answer.
+                let _ = stream.read(&mut byte);
+            });
+            RUNTIME.spawn(async move { client.get(target).send().await });
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), first_byte, "{scheme}");
+        }
+    }
+
+    #[test]
+    fn explains_a_refused_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0; 1024]);
+            stream.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n").unwrap();
+        });
+        let (client, _) = network(&proxy).unwrap();
+        let sent = RUNTIME.block_on(async move { client.get("https://127.0.0.1:9/").send().await });
+        let message = err(sent.unwrap_err());
+        assert!(message.to_lowercase().contains("proxy"), "{message}");
+    }
+
+    #[test]
+    fn sends_proxy_credentials() {
+        let settings = |proxy_type: &str, port| crate::ui::settings::AppSettings {
+            proxy_type: proxy_type.into(),
+            proxy_host: "127.0.0.1".into(),
+            proxy_port: port as f64,
+            proxy_username: "me".into(),
+            proxy_password: "p@ss:w/rd é".into(),
+            ..Default::default()
+        };
+        for proxy_type in ["http", "socks5"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = settings(proxy_type, listener.local_addr().unwrap().port()).proxy_url().unwrap();
+            let (client, _) = network(&url).unwrap();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0; 1024];
+                let n = stream.read(&mut buf).unwrap();
+                tx.send(buf[..n].to_vec()).unwrap();
+                let _ = stream.read(&mut buf);
+            });
+            RUNTIME.spawn(async move { client.get("http://127.0.0.1:9/").send().await });
+            let sent = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if proxy_type == "http" {
+                // Base64 of "me:p@ss:w/rd é".
+                let text = String::from_utf8_lossy(&sent).to_lowercase();
+                assert!(text.contains("proxy-authorization: basic bwu6cebzczp3l3jkimop"), "{text}");
+            } else {
+                // SOCKS5 greeting: version, method count, then the methods; 2 is username and password.
+                assert_eq!(sent[0], 5);
+                assert!(sent[2..].contains(&2), "{sent:?}");
+            }
+        }
+    }
 
     #[test]
     fn merged_formats_need_ffmpeg() {

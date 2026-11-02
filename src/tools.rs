@@ -15,7 +15,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use sha2::{Digest, Sha256};
 
-use crate::engine::{CLIENT, RUNTIME};
+use crate::engine::{RUNTIME, client, proxy};
 use crate::ui::settings::AppSettings;
 
 const YTDLP_ASSET: &str = if cfg!(windows) {
@@ -165,8 +165,14 @@ pub fn update_ytdlp(cx: &mut App) {
     if !bin.starts_with(bin_dir()) || !bin.is_file() {
         return;
     }
+    // A bad proxy skips the update rather than connecting without it.
+    let Ok(proxy) = proxy() else { return };
     cx.background_spawn(async move {
-        if let Err(e) = Command::new(&bin).arg("-U").output() {
+        let mut cmd = Command::new(&bin);
+        if let Some(proxy) = proxy {
+            cmd.arg("--proxy").arg(proxy);
+        }
+        if let Err(e) = cmd.arg("-U").output() {
             eprintln!("yt-dlp update failed: {e}");
         }
     })
@@ -246,7 +252,7 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
 }
 
 pub(crate) async fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let resp = CLIENT.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    let resp = client()?.get(url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
     Ok(resp.bytes().await.map_err(|e| e.to_string())?.to_vec())
 }
 

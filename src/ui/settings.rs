@@ -13,6 +13,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::*;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::download::format_bytes;
@@ -21,6 +22,7 @@ pub const FONT_FAMILY: &str = "DM Sans";
 pub const SYSTEM_THEME: &str = "System";
 /// Smallest and largest base text size in points; everything else scales with it.
 pub const TEXT_SIZES: (f64, f64) = (11., 20.);
+const PROXY_NONE: &str = "none";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +35,12 @@ pub struct AppSettings {
     pub speed_limit_kbps: f64,
     /// Parallel connections per download: byte-range parts for direct links, `-N` for yt-dlp.
     pub fragments: f64,
+    /// URL scheme of the proxy for all of Syphr's traffic, or `PROXY_NONE`.
+    pub proxy_type: String,
+    pub proxy_host: String,
+    pub proxy_port: f64,
+    pub proxy_username: String,
+    pub proxy_password: String,
     pub ytdlp_path: String,
     /// yt-dlp needs it to merge separate video and audio streams.
     pub ffmpeg_path: String,
@@ -58,6 +66,11 @@ impl Default for AppSettings {
             max_concurrent: 3.,
             speed_limit_kbps: 0.,
             fragments: 8.,
+            proxy_type: PROXY_NONE.into(),
+            proxy_host: String::new(),
+            proxy_port: 8080.,
+            proxy_username: String::new(),
+            proxy_password: String::new(),
             ytdlp_path: "yt-dlp".into(),
             ffmpeg_path: "ffmpeg".into(),
             notify_on_complete: true,
@@ -107,6 +120,29 @@ impl AppSettings {
 
     pub fn shortcut(&self, shortcut: &crate::Shortcut) -> String {
         self.shortcuts.get(shortcut.id()).cloned().unwrap_or_else(|| shortcut.default.into())
+    }
+
+    /// The proxy as a link, empty when off. An error means no request should run, not that it should go without one.
+    pub fn proxy_url(&self) -> Result<String, String> {
+        if self.proxy_type == PROXY_NONE {
+            return Ok(String::new());
+        }
+        // Checked here because reqwest ignores a proxy it can't read, connecting directly instead.
+        let invalid = || "The proxy's host or type isn't valid. Check them in Settings → Proxy.".to_string();
+        let host = self.proxy_host.trim();
+        let known = matches!(self.proxy_type.as_str(), "http" | "https" | "socks5" | "socks5h");
+        // Only a bare host: a pasted link would otherwise parse with its path swallowing the port.
+        if !known || !host.chars().all(|c| c.is_ascii_alphanumeric() || ".-_:[]".contains(c)) {
+            return Err(invalid());
+        }
+        let address = format!("{}://{host}:{}", self.proxy_type, self.proxy_port as u16);
+        let mut url = Url::parse(&address).map_err(|_| invalid())?;
+        // These percent-encode, so any character works in a password.
+        url.set_username(&self.proxy_username).map_err(|_| invalid())?;
+        if !self.proxy_password.is_empty() {
+            url.set_password(Some(&self.proxy_password)).map_err(|_| invalid())?;
+        }
+        Ok(url.to_string())
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -261,6 +297,36 @@ fn tool_path_field(
     .on_reset(
         move |cx| get(AppSettings::get(cx)) != &default,
         move |_, cx| AppSettings::update(cx, |s| set(s, reset_to.clone())),
+    )
+}
+
+fn update_proxy(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
+    AppSettings::update(cx, edit);
+    crate::engine::set_proxy(AppSettings::get(cx).proxy_url());
+}
+
+/// `SettingField::input` can't mask its text.
+fn proxy_password_field() -> SettingField<SharedString> {
+    SettingField::render(|_, window, cx| {
+        let value: SharedString = AppSettings::get(cx).proxy_password.clone().into();
+        let input = window.use_keyed_state("proxy-password", cx, |window, cx| {
+            cx.subscribe_self(|input: &mut InputState, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let password = input.value().to_string();
+                    update_proxy(cx, |s| s.proxy_password = password);
+                }
+            })
+            .detach();
+            InputState::new(window, cx).masked(true).default_value(value.clone())
+        });
+        if input.read(cx).value() != value {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        Input::new(&input).aria_label("Proxy password").mask_toggle()
+    })
+    .on_reset(
+        |cx| !AppSettings::get(cx).proxy_password.is_empty(),
+        |_, cx| update_proxy(cx, |s| s.proxy_password.clear()),
     )
 }
 
@@ -454,6 +520,73 @@ impl Render for SettingsView {
             ]),
         );
 
+        let mut proxy_items = vec![
+            SettingItem::new(
+                "Type",
+                SettingField::dropdown(
+                    vec![
+                        (PROXY_NONE.into(), "None".into()),
+                        ("http".into(), "HTTP".into()),
+                        ("https".into(), "HTTPS".into()),
+                        ("socks5".into(), "SOCKS5".into()),
+                        ("socks5h".into(), "SOCKS5 with proxy DNS".into()),
+                    ],
+                    |cx: &App| AppSettings::get(cx).proxy_type.clone().into(),
+                    |value: SharedString, cx: &mut App| update_proxy(cx, |s| s.proxy_type = value.to_string()),
+                )
+                .default_value(defaults.proxy_type.clone()),
+            )
+            .description(
+                "HTTP and SOCKS5 suit most providers. Choose HTTPS only if yours says it encrypts the connection to the \
+                 proxy. SOCKS5 with proxy DNS also sends site lookups through the proxy.",
+            ),
+        ];
+        if AppSettings::get(cx).proxy_type != PROXY_NONE {
+            let host = SettingItem::new(
+                "Host",
+                SettingField::input(
+                    |cx: &App| AppSettings::get(cx).proxy_host.clone().into(),
+                    |value: SharedString, cx: &mut App| update_proxy(cx, |s| s.proxy_host = value.trim().to_string()),
+                )
+                .default_value(defaults.proxy_host.clone()),
+            )
+            .layout(Axis::Vertical);
+            proxy_items.extend([
+                match AppSettings::get(cx).proxy_url() {
+                    Ok(_) => host.description("Name or IP address only, such as proxy.example.com."),
+                    Err(message) => host.description(message),
+                },
+                SettingItem::new(
+                    "Port",
+                    SettingField::number_input(
+                        number(1., 65535., 1.),
+                        |cx: &App| AppSettings::get(cx).proxy_port,
+                        |value: f64, cx: &mut App| update_proxy(cx, |s| s.proxy_port = value),
+                    )
+                    .default_value(defaults.proxy_port),
+                ),
+                SettingItem::new(
+                    "Username",
+                    SettingField::input(
+                        |cx: &App| AppSettings::get(cx).proxy_username.clone().into(),
+                        |value: SharedString, cx: &mut App| update_proxy(cx, |s| s.proxy_username = value.to_string()),
+                    )
+                    .default_value(defaults.proxy_username.clone()),
+                )
+                .layout(Axis::Vertical)
+                .description("Leave empty if the proxy doesn't ask for one."),
+                SettingItem::new("Password", proxy_password_field())
+                    .layout(Axis::Vertical)
+                    .description("Saved unencrypted in Syphr's settings file."),
+            ]);
+        }
+        let proxy =
+            SettingPage::new("Proxy").icon(Icon::new(gpui_kit::assets::IconName::Network)).resettable(true).group(
+                SettingGroup::new()
+                    .description("Used for downloads, tool installs and update checks. Applies to new downloads.")
+                    .items(proxy_items),
+            );
+
         let ytdlp = SettingPage::new("YouTube & sites").icon(IconName::Globe).resettable(true).group(
             SettingGroup::new().items([
                 SettingItem::new(
@@ -563,7 +696,7 @@ impl Render for SettingsView {
             div().flex_1().min_h_0().child(
                 Settings::new("settings")
                     .sidebar_width(cx.theme().font_size * 18.)
-                    .pages([appearance, downloads, ytdlp, updates, shortcuts]),
+                    .pages([appearance, downloads, proxy, ytdlp, updates, shortcuts]),
             ),
         )
     }
@@ -583,5 +716,29 @@ mod tests {
         assert_eq!(partial.ytdlp_path, "yt-dlp");
         assert_eq!(partial.ffmpeg_path, "ffmpeg");
         assert_eq!(partial.fragments, 8.);
+    }
+
+    #[test]
+    fn builds_proxy_links() {
+        let proxy = |proxy_type: &str, host: &str| AppSettings {
+            proxy_type: proxy_type.into(),
+            proxy_host: host.into(),
+            proxy_port: 1080.,
+            ..Default::default()
+        };
+        assert_eq!(AppSettings::default().proxy_url().unwrap(), "");
+        assert_eq!(proxy("socks5h", "proxy.local").proxy_url().unwrap(), "socks5h://proxy.local:1080");
+        assert_eq!(proxy("http", "[::1]").proxy_url().unwrap(), "http://[::1]:1080/");
+        let with_login = AppSettings {
+            proxy_username: "me".into(),
+            proxy_password: "p@ss:w/rd".into(),
+            ..proxy("http", "proxy.local")
+        };
+        assert_eq!(with_login.proxy_url().unwrap(), "http://me:p%40ss%3Aw%2Frd@proxy.local:1080/");
+        for (proxy_type, host) in
+            [("ftp", "proxy.local"), ("http", ""), ("socks5", ""), ("http", "http://proxy.local"), ("http", "a b")]
+        {
+            assert!(proxy(proxy_type, host).proxy_url().is_err(), "{proxy_type} {host}");
+        }
     }
 }

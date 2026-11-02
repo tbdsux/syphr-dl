@@ -15,7 +15,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::names::{file_name_of, move_file, partial_dir, sanitize, unique_path};
-use super::{Request, Shared, err};
+use super::{Request, Shared, err, proxy};
 
 /// shortcut: a fixed host list decides when to ask yt-dlp; switch to `yt-dlp --simulate` probing if users need more sites.
 const HOSTS: [&str; 7] =
@@ -80,15 +80,16 @@ impl RawFormat {
 
 /// Blocking: run it on a background executor.
 pub fn probe(bin: &str, url: &str) -> Result<VideoInfo, String> {
-    let output =
-        Command::new(bin).args(["-J", "--no-playlist", "--no-warnings", url]).output().map_err(|err| {
-            match err.kind() {
-                ErrorKind::NotFound => {
-                    format!("Couldn't find “{bin}”. Install the required tools to download from this site.")
-                }
-                _ => format!("Couldn't run {bin}: {err}"),
-            }
-        })?;
+    let mut cmd = Command::new(bin);
+    if let Some(proxy) = proxy()? {
+        cmd.arg("--proxy").arg(proxy);
+    }
+    let output = cmd.args(["-J", "--no-playlist", "--no-warnings", url]).output().map_err(|err| match err.kind() {
+        ErrorKind::NotFound => {
+            format!("Couldn't find “{bin}”. Install the required tools to download from this site.")
+        }
+        _ => format!("Couldn't run {bin}: {err}"),
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let reason = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
@@ -237,6 +238,9 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
     }
     if request.limit_bps > 0 {
         cmd.arg("-r").arg(request.limit_bps.to_string());
+    }
+    if let Some(proxy) = proxy()? {
+        cmd.arg("--proxy").arg(proxy);
     }
     let mut child = cmd
         .arg("--")
