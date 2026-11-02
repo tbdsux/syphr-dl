@@ -216,6 +216,7 @@ mod tests {
             file_name: None,
             path: None,
             fragments: Vec::new(),
+            speed_history: Vec::new(),
         }
     }
 

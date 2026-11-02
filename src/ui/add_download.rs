@@ -178,6 +178,7 @@ impl AddDownload {
             file_name: file_name.clone(),
             path: None,
             fragments: Vec::new(),
+            speed_history: Vec::new(),
         };
         match &self.lookup {
             Lookup::NotNeeded => Err("Enter a link that starts with http:// or https://"),

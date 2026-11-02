@@ -80,6 +80,7 @@ impl Store {
                     file_name: r.get(11)?,
                     path: r.get::<_, Option<String>>(12)?.map(Into::into),
                     fragments: Vec::new(),
+                    speed_history: Vec::new(),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -246,6 +247,7 @@ mod tests {
             file_name: None,
             path: Some("/tmp/1.mp4".into()),
             fragments: vec![0.5],
+            speed_history: Vec::new(),
         }
     }
 

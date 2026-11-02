@@ -5,6 +5,7 @@ use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
+    chart::AreaChart,
     h_flex,
     input::Input,
     kbd::Kbd,
@@ -19,7 +20,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::download::{Download, Kind, Status, format_bytes};
+use crate::download::{Download, Kind, SPEED_SAMPLES, Status, format_bytes, format_duration};
 use crate::ui::downloads_table::{
     DownloadsTable, eta_text, fragment_strip, kind_icon, next_step, progress_color, size_text, speed_text, status_tag,
 };
@@ -312,6 +313,31 @@ impl SyphrApp {
                         .gap_1()
                         .child(div().text_xs().text_color(muted).child(format!("{} connections", d.fragments.len())))
                         .child(fragment_strip(d, rems(0.5), cx)),
+                )
+            })
+            .when(!d.speed_history.is_empty(), |this| {
+                let color = progress_color(d.status, cx);
+                let newest = d.speed_history.len() - 1;
+                this.child(
+                    div().h(rems(5.)).child(
+                        AreaChart::new(d.speed_history.iter().map(|&speed| speed as f64).enumerate())
+                            .x(|(i, _)| i.to_string())
+                            .y(|(_, speed)| *speed)
+                            .name("Speed")
+                            .linear()
+                            .stroke(color)
+                            .fill(color.opacity(0.2))
+                            .point_count(SPEED_SAMPLES)
+                            .x_axis(false)
+                            .y_axis(true)
+                            .y_tick_count(2)
+                            .y_tick_format(|speed| format!("{}/s", format_bytes(speed as u64)))
+                            .tooltip_title(move |(i, _)| {
+                                format!("{} ago", format_duration(((newest - i) / 2) as u64)).into()
+                            })
+                            .tooltip_value(|_, _, speed| format!("{}/s", format_bytes(speed as u64)).into())
+                            .appear(false),
+                    ),
                 )
             })
             .child(

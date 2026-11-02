@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use gpui_kit::SharedString;
 
+/// Speed samples kept per download: a minute at the UI's two polls a second.
+pub const SPEED_SAMPLES: usize = 120;
+
 /// Ordered for sorting: active work first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
@@ -52,6 +55,8 @@ pub struct Download {
     pub path: Option<PathBuf>,
     /// Each parallel part's finished fraction (0–1); empty for single-connection downloads.
     pub fragments: Vec<f32>,
+    /// Recent speeds in bytes per second, oldest first; not saved, so empty after a restart.
+    pub speed_history: Vec<u64>,
 }
 
 impl Download {
@@ -60,6 +65,13 @@ impl Download {
             Some(total) if total > 0 => (self.received_bytes as f32 / total as f32 * 100.).min(100.),
             _ => 0.,
         }
+    }
+
+    pub fn record_speed(&mut self) {
+        if self.speed_history.len() == SPEED_SAMPLES {
+            self.speed_history.remove(0);
+        }
+        self.speed_history.push(self.bytes_per_sec);
     }
 
     pub fn eta_secs(&self) -> Option<u64> {
@@ -117,11 +129,18 @@ mod tests {
             file_name: None,
             path: None,
             fragments: Vec::new(),
+            speed_history: Vec::new(),
         };
         assert!((d.progress() - 64.58).abs() < 0.1);
         assert_eq!(d.eta_secs(), Some(4));
         let unknown = Download { total_bytes: None, ..d.clone() };
         assert_eq!(unknown.progress(), 0.);
         assert_eq!(unknown.eta_secs(), None);
+
+        let mut sampled = d.clone();
+        sampled.speed_history = vec![1; SPEED_SAMPLES];
+        sampled.record_speed();
+        assert_eq!(sampled.speed_history.len(), SPEED_SAMPLES);
+        assert_eq!((sampled.speed_history[0], sampled.speed_history[SPEED_SAMPLES - 1]), (1, 4 * MB));
     }
 }

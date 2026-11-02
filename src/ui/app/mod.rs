@@ -451,6 +451,7 @@ impl SyphrApp {
             if job.is_running() {
                 d.received_bytes = job.received();
                 d.bytes_per_sec = job.speed();
+                d.record_speed();
                 d.fragments = job.fragments();
                 if let Some(total) = job.total() {
                     d.total_bytes = Some(total);

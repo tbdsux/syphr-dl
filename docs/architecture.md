@@ -57,7 +57,7 @@ Until a column is resized, Name fills the table. After that, the Actions column 
    - `Downloading` with no free slot → back to `Queued`.
    - `Paused`/`Failed`/`Completed`/`Missing` with a running job → stop it.
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
-3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row.
+3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details card draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
