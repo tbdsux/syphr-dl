@@ -142,7 +142,8 @@ impl SyphrApp {
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let active = this.read_with(cx, |this, _| this.has_active()).unwrap_or(false);
-            allow_close(active, window, cx)
+            close_main_window(active, window, cx);
+            false
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -179,9 +180,7 @@ impl SyphrApp {
 
     /// Close Window and the Linux close button, which bypass the platform's should-close check.
     fn close(&mut self, window: &mut Window, cx: &mut App) {
-        if allow_close(self.has_active(), window, cx) {
-            window.remove_window();
-        }
+        close_main_window(self.has_active(), window, cx);
     }
 
     /// Pushes the filtered list into the table and keeps the selection on the same download.
@@ -518,17 +517,15 @@ fn announce(id: u64, title: &'static str, body: SharedString, window: &mut Windo
     }
 }
 
-/// Whether closing the main window may go ahead. On macOS the app hides instead, like other Mac apps,
-/// so the list and running downloads survive; elsewhere running downloads keep it open, minimized.
-pub fn allow_close(active: bool, window: &mut Window, cx: &mut App) -> bool {
-    if cfg!(target_os = "macos") {
+/// Quits, so no other open window keeps the process alive, unless downloads are running: those keep going
+/// with the app hidden on macOS and minimized elsewhere.
+fn close_main_window(active: bool, window: &mut Window, cx: &mut App) {
+    if !active {
+        cx.quit();
+    } else if cfg!(target_os = "macos") {
         cx.hide();
-        false
-    } else if active {
-        window.minimize_window();
-        false
     } else {
-        true
+        window.minimize_window();
     }
 }
 
