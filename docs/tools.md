@@ -44,7 +44,7 @@ The tools run from the data folder, not from inside the app, because yt-dlp has 
 
 The builds come from `syphr-dl --fetch-tools <dir>`, which `release.yml` runs, so they use the same URLs and checksums as the installer. On Linux that adds a pinned static ffmpeg 7.0.2 from johnvansickle.com, used only for this package. The regular Linux build still asks for the distro package.
 
-The bundled ffmpeg must not be built with `--enable-nonfree`, because that can't be redistributed. Check a new pin's configuration before bumping it. `licenses/` (the GPL text and a notice of where each tool comes from) is copied into the `tools` folder of every full build, and
+The bundled ffmpeg must not be built with `--enable-nonfree`, because that can't be redistributed. Check a new pin's configuration before bumping it. `licenses/` (the GPL text and a notice of where each tool comes from) is copied into the `tools` folder of every full build, and **Settings → About** lists yt-dlp and ffmpeg only in a full build, because the regular build doesn't ship them.
 
 ## Keeping yt-dlp current
 

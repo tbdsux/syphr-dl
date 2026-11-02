@@ -9,6 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
+    link::Link,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -265,6 +266,19 @@ fn check_tools(window: &mut Window, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// A row's value on the About page: optional plain text, then links out.
+fn about_field(
+    text: Option<&'static str>,
+    links: &'static [(&'static str, &'static str)],
+) -> SettingField<SharedString> {
+    SettingField::render(move |_, _, cx| {
+        h_flex()
+            .gap_3()
+            .children(text.map(|text| div().text_color(cx.theme().muted_foreground).child(text)))
+            .children(links.iter().map(|&(label, url)| Link::new(url).href(url).child(label)))
+    })
 }
 
 /// A path input with a button that opens the file picker; the kit's own input field has no slot for one.
@@ -691,12 +705,52 @@ impl Render for SettingsView {
                 })),
         );
 
+        let mut third_party = SettingGroup::new().title("Third-party software");
+        // Only what this download ships: the regular build leaves yt-dlp and ffmpeg to their upstream sources.
+        if crate::tools::is_full_build() {
+            third_party = third_party
+                .description("yt-dlp and ffmpeg come with this download and keep their own licenses. Syphr runs them as separate programs.")
+                .items([
+                    SettingItem::new("yt-dlp", about_field(None, &[("GPLv3+", "https://github.com/yt-dlp/yt-dlp#licensing"), ("Source", "https://github.com/yt-dlp/yt-dlp")])),
+                    SettingItem::new("ffmpeg", about_field(None, &[("GPLv3", "https://www.ffmpeg.org/legal.html"), ("Source", "https://www.ffmpeg.org/download.html#get-sources")])),
+                ]);
+        }
+        third_party = third_party.item(SettingItem::new(
+            "DM Sans",
+            about_field(
+                None,
+                &[("SIL Open Font License", "https://github.com/tbdsux/syphr-dl/blob/main/assets/fonts/OFL.txt")],
+            ),
+        ));
+        let about = SettingPage::new("About")
+            .icon(IconName::Info)
+            .resettable(false)
+            .description(env!("CARGO_PKG_DESCRIPTION"))
+            .group(SettingGroup::new().items([
+                SettingItem::new(
+                    "Version",
+                    about_field(
+                        Some(env!("CARGO_PKG_VERSION")),
+                        &[(
+                            "Release notes",
+                            concat!("https://github.com/tbdsux/syphr-dl/releases/tag/v", env!("CARGO_PKG_VERSION")),
+                        )],
+                    ),
+                ),
+                SettingItem::new(
+                    "License",
+                    about_field(None, &[("MIT", "https://github.com/tbdsux/syphr-dl/blob/main/LICENSE")]),
+                ),
+                SettingItem::new("Source code", about_field(None, &[("GitHub", "https://github.com/tbdsux/syphr-dl")])),
+            ]))
+            .group(third_party);
+
         let chrome = cx.theme().sidebar;
         v_flex().size_full().child(TitleBar::new().bg(chrome).border_color(chrome).child("Settings")).child(
             div().flex_1().min_h_0().child(
                 Settings::new("settings")
                     .sidebar_width(cx.theme().font_size * 18.)
-                    .pages([appearance, downloads, proxy, ytdlp, updates, shortcuts]),
+                    .pages([appearance, downloads, proxy, ytdlp, updates, shortcuts, about]),
             ),
         )
     }
