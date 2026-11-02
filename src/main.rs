@@ -95,7 +95,6 @@ fn main() {
         settings::apply_appearance(cx);
         tools::update_ytdlp(cx);
         update::start(cx);
-        tray::install(cx);
 
         apply_shortcuts(cx);
         cx.on_action(|_: &OpenSettings, cx| settings::open_settings_window(cx));
@@ -119,8 +118,10 @@ fn main() {
             window_min_size: Some(size(px(880.), px(520.))),
             ..TitleBar::window_options()
         };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::SyphrApp::new(window, cx)))
-            .expect("failed to open window");
+        let (window, view) =
+            gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::SyphrApp::new(window, cx)))
+                .expect("failed to open window");
+        tray::install(window, view, cx);
         cx.activate(true);
     });
 }

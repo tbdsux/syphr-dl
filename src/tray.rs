@@ -1,43 +1,53 @@
 //! The menu bar icon on macOS and the notification-area icon on Windows and Linux.
 
-use gpui_kit::App;
+use gpui_kit::{AnyWindowHandle, App, Entity, SystemNotification};
 use image::{Rgba, imageops::FilterType};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-enum Event {
-    Show,
-    Quit,
-}
+use crate::ui::{
+    app::{SyphrApp, expand_home},
+    settings::{self, AppSettings},
+};
 
-/// Adds the icon with Show and Quit; it lives until the app quits.
-pub fn install(cx: &mut App) {
-    let show = MenuItem::new("Show Syphr", true, None);
-    let quit = MenuItem::new("Quit Syphr", true, None);
-    let mut tray = match build(&show, &quit) {
+/// Adds the icon and its menu; it lives until the app quits.
+pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
+    let mut tray = match build() {
         Ok(tray) => Some(tray),
         Err(e) => return eprintln!("tray icon: {e}"),
     };
 
     // The handlers run on the platform's thread (a worker on Linux), so hop onto the app's.
     let (tx, rx) = async_channel::unbounded();
-    let quit_id = quit.id().clone();
     let menu_tx = tx.clone();
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-        menu_tx.try_send(if e.id == quit_id { Event::Quit } else { Event::Show }).ok();
+        menu_tx.try_send(e.id.0).ok();
     }));
     TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
         if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e
             && !cfg!(target_os = "macos")
         {
-            tx.try_send(Event::Show).ok();
+            tx.try_send("show".to_string()).ok();
         }
     }));
     cx.spawn(async move |cx| {
-        while let Ok(event) = rx.recv().await {
-            cx.update(|cx| match event {
-                Event::Show => crate::show_main_window(cx),
-                Event::Quit => cx.quit(),
+        while let Ok(id) = rx.recv().await {
+            cx.update(|cx| match id.as_str() {
+                "show" => crate::show_main_window(cx),
+                "new" => {
+                    crate::show_main_window(cx);
+                    window.update(cx, |_, window, cx| app.update(cx, |this, cx| this.new_download(window, cx))).ok();
+                }
+                "pause" => app.update(cx, |this, cx| this.pause_all(cx)),
+                "resume" => app.update(cx, |this, cx| this.resume_all(cx)),
+                "folder" => open_downloads_folder(cx),
+                "settings" => {
+                    // The app may be in the background, where opening a window wouldn't bring it forward.
+                    cx.activate(true);
+                    settings::open_settings_window(cx);
+                }
+                "quit" => cx.quit(),
+                _ => {}
             });
         }
     })
@@ -50,9 +60,35 @@ pub fn install(cx: &mut App) {
     .detach();
 }
 
-fn build(show: &MenuItem, quit: &MenuItem) -> Result<TrayIcon, Box<dyn std::error::Error>> {
+fn open_downloads_folder(cx: &mut App) {
+    let dir = expand_home(&AppSettings::get(cx).download_dir);
+    // Nothing may have been saved there yet, and opening a missing folder fails without a word.
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => cx.open_with_system(&dir),
+        Err(e) => cx.show_system_notification(SystemNotification {
+            tag: "open-downloads-folder".into(),
+            title: "Couldn't open the downloads folder".into(),
+            body: e.to_string().into(),
+            actions: Vec::new(),
+        }),
+    }
+}
+
+fn build() -> Result<TrayIcon, Box<dyn std::error::Error>> {
+    let item = |id: &str, label: &str| MenuItem::with_id(id, label, true, None);
     let menu = Menu::new();
-    menu.append_items(&[show, &PredefinedMenuItem::separator(), quit])?;
+    menu.append_items(&[
+        &item("show", "Show Syphr"),
+        &item("new", "New Download…"),
+        &PredefinedMenuItem::separator(),
+        &item("pause", "Pause All"),
+        &item("resume", "Resume All"),
+        &PredefinedMenuItem::separator(),
+        &item("folder", "Open Downloads Folder"),
+        &item("settings", "Settings…"),
+        &PredefinedMenuItem::separator(),
+        &item("quit", "Quit Syphr"),
+    ])?;
     let builder = TrayIconBuilder::new();
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_templated(icon());

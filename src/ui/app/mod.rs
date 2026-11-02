@@ -480,12 +480,31 @@ impl SyphrApp {
         self.sync_table(cx);
     }
 
+    pub fn pause_all(&mut self, cx: &mut Context<Self>) {
+        self.set_all(&[Status::Downloading, Status::Queued], Status::Paused, cx);
+    }
+
+    pub fn resume_all(&mut self, cx: &mut Context<Self>) {
+        self.set_all(&[Status::Paused], Status::Downloading, cx);
+    }
+
     fn set_all(&mut self, from: &[Status], to: Status, cx: &mut Context<Self>) {
         for d in self.downloads.iter_mut().filter(|d| from.contains(&d.status)) {
             d.status = to;
             d.bytes_per_sec = 0;
         }
         self.sync_table(cx);
+    }
+
+    pub fn new_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let auto_paste = AppSettings::get(cx).auto_paste;
+        self.add.update(cx, |add, cx| {
+            if auto_paste && add.url().read(cx).value().is_empty() {
+                add.paste_copied_link(window, cx);
+            }
+            add.focus(window, cx);
+            add.set_open(true, cx);
+        })
     }
 
     fn submit_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -547,7 +566,7 @@ pub(crate) fn reveal(path: &Path) -> std::io::Result<std::process::Child> {
     std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn()
 }
 
-fn expand_home(folder: &str) -> PathBuf {
+pub(crate) fn expand_home(folder: &str) -> PathBuf {
     match folder.strip_prefix("~/") {
         Some(rest) => crate::ui::settings::home().join(rest),
         None => PathBuf::from(folder),

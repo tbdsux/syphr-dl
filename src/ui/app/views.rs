@@ -200,11 +200,16 @@ impl SyphrApp {
                     .ghost()
                     .icon(IconName::Play)
                     .label("Resume all")
-                    .on_click(cx.listener(|this, _, _, cx| this.set_all(&[Status::Paused], Status::Downloading, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.resume_all(cx))),
             )
-            .child(Button::new("pause-all").small().ghost().icon(IconName::Pause).label("Pause all").on_click(
-                cx.listener(|this, _, _, cx| this.set_all(&[Status::Downloading, Status::Queued], Status::Paused, cx)),
-            ))
+            .child(
+                Button::new("pause-all")
+                    .small()
+                    .ghost()
+                    .icon(IconName::Pause)
+                    .label("Pause all")
+                    .on_click(cx.listener(|this, _, _, cx| this.pause_all(cx))),
+            )
             .child(Input::new(&self.search).small().prefix(IconName::Search).cleanable(true).ml_2().w(rems(17.)))
     }
 
@@ -479,16 +484,7 @@ impl Render for SyphrApp {
             .size_full()
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
-            .on_action(cx.listener(|this, _: &NewDownload, window, cx| {
-                let auto_paste = AppSettings::get(cx).auto_paste;
-                this.add.update(cx, |add, cx| {
-                    if auto_paste && add.url().read(cx).value().is_empty() {
-                        add.paste_copied_link(window, cx);
-                    }
-                    add.focus(window, cx);
-                    add.set_open(true, cx);
-                })
-            }))
+            .on_action(cx.listener(|this, _: &NewDownload, window, cx| this.new_download(window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 let handle = this.search.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);

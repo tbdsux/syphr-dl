@@ -22,11 +22,11 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Startup
 
-`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the Geist fonts and bundled themes, reads settings, binds shortcuts, builds the menus, adds the tray icon, and opens the main window. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`), and `update::start` begins checking for app updates.
+`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the Geist fonts and bundled themes, reads settings, binds shortcuts, builds the menus, opens the main window, and adds the tray icon. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`), and `update::start` begins checking for app updates.
 
 ## Running in the background
 
-Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) offers *Show Syphr* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
+Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
 
 ## Adding a download
 
