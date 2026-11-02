@@ -11,7 +11,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/engine/` | Download jobs. See [engine.md](engine.md) |
 | `src/tools.rs` | Finds and installs yt-dlp and ffmpeg. See [tools.md](tools.md) |
 | `src/ui/app/mod.rs` | `SyphrApp`: the list, selection, filters, and the `pump` that drives jobs |
-| `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, details card, bulk bar, status bar |
+| `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, details pane, bulk bar |
 | `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/downloads_table.rs` | The downloads table (columns, sorting, row rendering) |
@@ -57,7 +57,7 @@ Until a column is resized, Name fills the table. After that, the Actions column 
    - `Downloading` with no free slot → back to `Queued`.
    - `Paused`/`Failed`/`Completed`/`Missing` with a running job → stop it.
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
-3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details card draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
+3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details pane draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
@@ -84,7 +84,7 @@ Closing the window quits, unless anything is downloading or queued; see the tray
 
 The list and a log per download live in SQLite at `downloads.db` in Syphr's folder (see Settings below), through `rusqlite` with SQLite built in. `SyphrApp::new` loads it, newest first, and continues ids from the highest one. Every `sync_table` calls `Store::sync`, which writes only rows whose saved fields changed (speed and part fractions aren't saved, so a running download rewrites just its byte count) and deletes removed rows with their log, in one transaction.
 
-The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The log button in the details card shows it, newest first.
+The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The log button in the details pane shows it, newest first.
 
 Downloads that were running or queued when Syphr quit start again on launch. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
 

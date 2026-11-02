@@ -160,6 +160,14 @@ pub fn apply_appearance(cx: &mut App) {
     Theme::update(cx, |theme| {
         theme.font_family = FONT_FAMILY.into();
         theme.font_size = px(settings.font_size as f32);
+        // Window chrome takes a hint of the theme's accent, so it reads as a frame around the content panel.
+        theme.sidebar = theme.sidebar.blend(theme.primary.opacity(0.08));
+        // Download rows are bars that stack; rules between them would cut the stack up. Resize handles still show on hover.
+        theme.table_row_border = transparent_black();
+        // Some themes tint selection in a color unrelated to their accent; a selected row should read as the accent.
+        theme.table_active = theme.primary.opacity(0.16);
+        theme.table_head = transparent_black();
+        theme.table = transparent_black();
     });
     cx.refresh_windows();
 }

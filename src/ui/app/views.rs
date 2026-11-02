@@ -1,9 +1,9 @@
-//! Everything `SyphrApp` draws: title bar, sidebar, toolbar, details card, bulk bar and status bar.
+//! Everything `SyphrApp` draws: title bar, sidebar, toolbar, details pane, bulk bar and status bar.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, TitleBar, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, Size, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
     chart::AreaChart,
     h_flex,
@@ -12,8 +12,6 @@ use gpui_kit::component::{
     popover::Popover,
     progress::Progress,
     scroll::ScrollableElement as _,
-    sidebar::{Sidebar, SidebarGroup, SidebarItem as _, SidebarMenu, SidebarMenuItem},
-    status_bar::StatusBar,
     table::DataTable,
     v_flex,
 };
@@ -22,7 +20,8 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, SPEED_SAMPLES, Status, format_bytes, format_duration};
 use crate::ui::downloads_table::{
-    DownloadsTable, eta_text, fragment_strip, kind_icon, next_step, progress_color, size_text, speed_text, status_tag,
+    DownloadsTable, eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text,
+    status_label,
 };
 use crate::ui::settings::AppSettings;
 use crate::{
@@ -62,7 +61,10 @@ impl SyphrApp {
             .trigger(PanelAnchor::new(field))
             .content(move |_, _, _| add.clone());
 
-        TitleBar::new().on_close_window(cx.listener(|this, _: &ClickEvent, window, cx| this.close(window, cx))).child(
+        let chrome = cx.theme().sidebar;
+        // Title bar, sidebar and status bar read as one frame around the content panel.
+        let title_bar = TitleBar::new().bg(chrome).border_color(chrome);
+        title_bar.on_close_window(cx.listener(|this, _: &ClickEvent, window, cx| this.close(window, cx))).child(
             h_flex()
                 .w_full()
                 .pr_2()
@@ -95,53 +97,108 @@ impl SyphrApp {
         )
     }
 
-    fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let item = |label: &'static str, icon: Icon, filter: Filter, cx: &mut Context<Self>| {
-            let count = self.downloads.iter().filter(|d| filter.matches(d)).count();
-            SidebarMenuItem::new(label)
-                .icon(icon)
-                .active(self.filter == filter)
-                .suffix(move |_, cx| {
-                    // Tabular digits so counts line up down the column.
-                    div()
-                        .text_xs()
-                        .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(count.to_string())
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.filter = filter;
-                    this.sync_table(cx);
-                }))
+    /// Every filter row is also a bar: its wash shows how much of the list that filter covers.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let total = self.downloads.len().max(1) as f32;
+        let filter_row =
+            |label: &'static str, icon: Icon, filter: Filter, tint: Option<Hsla>, cx: &mut Context<Self>| {
+                let count = self.downloads.iter().filter(|d| filter.matches(d)).count();
+                let active = self.filter == filter;
+                let theme = cx.theme();
+                let (muted, foreground) = (theme.muted_foreground, theme.foreground);
+                let icon = icon.when_some(tint, |icon, color| icon.text_color(color));
+                nav_row(label, icon, tint.map(|color| (count as f32 / total, color)), cx)
+                    .text_color(if active || count > 0 { foreground } else { muted })
+                    .when(active, |this| this.bg(theme.background))
+                    .when(!active, |this| this.hover(|this| this.bg(theme.sidebar_accent)))
+                    .aria_selected(active)
+                    .child(
+                        // Tabular digits so counts line up down the column.
+                        div()
+                            .text_sm()
+                            .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
+                            .text_color(muted)
+                            .when(count > 0, |this| this.child(count.to_string())),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.filter = filter;
+                        this.sync_table(cx);
+                    }))
+            };
+        let kind_row = |label: &'static str, kind: Kind, cx: &mut Context<Self>| {
+            let color = kind_color(kind, cx);
+            filter_row(label, kind_icon(kind), Filter::Kind(kind), Some(color), cx)
         };
-        Sidebar::new("nav")
-            .w(rems(16.))
-            .child(SidebarGroup::new("Downloads").child(SidebarMenu::new().children([
-                item("All", Icon::new(IconName::Inbox), Filter::All, cx),
-                item("Active", Icon::new(IconName::ArrowDown), Filter::Active, cx),
-                item("Completed", Icon::new(IconName::CircleCheck), Filter::Completed, cx),
-                item("Failed", Icon::new(IconName::CircleX), Filter::Failed, cx),
-            ])))
-            .child(SidebarGroup::new("Categories").child(SidebarMenu::new().children([
-                item("Video", Icon::new(Lucide::Film), Filter::Kind(Kind::Video), cx),
-                item("Music", Icon::new(Lucide::Music), Filter::Kind(Kind::Music), cx),
-                item("Documents", Icon::new(IconName::FileText), Filter::Kind(Kind::Document), cx),
-                item("Programs", Icon::new(Lucide::Package), Filter::Kind(Kind::Program), cx),
-                item("Archives", Icon::new(Lucide::FileArchive), Filter::Kind(Kind::Archive), cx),
-            ])))
-            // A real menu item, so it lines up with the items above.
-            .footer(
-                SidebarMenu::new()
-                    .w_full()
+        let theme = cx.theme();
+        let (primary, success, danger) = (theme.primary, theme.success, theme.danger);
+        let (muted, hover) = (theme.muted_foreground, theme.sidebar_accent);
+        v_flex()
+            .id("nav")
+            .role(Role::Tree)
+            .flex_none()
+            .w(rems(15.))
+            .h_full()
+            .text_color(theme.foreground)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_1()
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(group_title("Downloads", cx))
+                            .child(filter_row("All", Icon::new(IconName::Inbox), Filter::All, None, cx))
+                            .child(filter_row(
+                                "Active",
+                                Icon::new(IconName::ArrowDown),
+                                Filter::Active,
+                                Some(primary),
+                                cx,
+                            ))
+                            .child(filter_row(
+                                "Completed",
+                                Icon::new(IconName::CircleCheck),
+                                Filter::Completed,
+                                Some(success),
+                                cx,
+                            ))
+                            .child(filter_row(
+                                "Failed",
+                                Icon::new(IconName::CircleX),
+                                Filter::Failed,
+                                Some(danger),
+                                cx,
+                            )),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(group_title("Categories", cx))
+                            .child(kind_row("Video", Kind::Video, cx))
+                            .child(kind_row("Music", Kind::Music, cx))
+                            .child(kind_row("Documents", Kind::Document, cx))
+                            .child(kind_row("Programs", Kind::Program, cx))
+                            .child(kind_row("Archives", Kind::Archive, cx)),
+                    )
+                    .overflow_y_scrollbar(),
+            )
+            .child(self.render_transfer(cx))
+            .child(
+                v_flex()
+                    .pb_2()
+                    .gap_0p5()
                     .children(crate::update::available(cx).map(|release| {
                         let label = crate::update::busy(cx).unwrap_or(format!("Update to {}", release.tag).into());
-                        SidebarMenuItem::new(label)
-                            .icon(Icon::new(Lucide::CircleArrowUp))
+                        nav_row(label, Icon::new(Lucide::CircleArrowUp), None, cx)
+                            .hover(|this| this.bg(hover))
                             .on_click(|_, window, cx| crate::update::install(window.window_handle(), cx))
                     }))
                     .children(AppSettings::get(cx).show_quick_download.then(|| {
-                        SidebarMenuItem::new("Quick download").icon(Icon::new(Lucide::ClipboardPaste)).on_click(
-                            cx.listener(|this, _, window, cx| {
+                        nav_row("Quick download", Icon::new(Lucide::ClipboardPaste), None, cx)
+                            .text_color(muted)
+                            .hover(|this| this.bg(hover))
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 let pasted = this.add.update(cx, |add, cx| {
                                     let pasted = add.paste_copied_link(window, cx);
                                     if pasted {
@@ -155,16 +212,42 @@ impl SyphrApp {
                                         cx,
                                     );
                                 }
-                            }),
-                        )
+                            }))
                     }))
                     .child(
-                        SidebarMenuItem::new("Settings")
-                            .icon(IconName::Settings)
+                        nav_row("Settings", Icon::new(IconName::Settings), None, cx)
+                            .text_color(muted)
+                            .hover(|this| this.bg(hover))
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
-                    )
-                    .render("footer-menu", window, cx),
+                    ),
             )
+    }
+
+    /// What is moving right now, at the foot of the sidebar.
+    fn render_transfer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.downloads.iter().filter(|d| d.status == Status::Downloading);
+        let (count, speed) = active.fold((0, 0), |(n, s), d| (n + 1, s + d.bytes_per_sec));
+        let queued = self.downloads.iter().filter(|d| d.status == Status::Queued).count();
+        let detail = match (count, queued) {
+            (0, 0) => "Nothing downloading".to_string(),
+            (n, 0) => format!("{n} downloading"),
+            (0, q) => format!("{q} queued"),
+            (n, q) => format!("{n} downloading, {q} queued"),
+        };
+        let theme = cx.theme();
+        v_flex()
+            .px_5()
+            .py_3()
+            .when(count > 0, |this| {
+                this.child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
+                        .child(format!("{}/s", format_bytes(speed))),
+                )
+            })
+            .child(div().text_xs().text_color(theme.muted_foreground).child(detail))
     }
 
     /// The current list's name and what it holds, with the commands that act on all of it.
@@ -181,13 +264,11 @@ impl SyphrApp {
         let summary = [(active, "downloading"), (done, "completed")]
             .into_iter()
             .filter(|(n, _)| *n > 0 && *n != total)
-            .fold(summary, |s, (n, what)| format!("{s} · {n} {what}"));
+            .fold(summary, |s, (n, what)| format!("{s}, {n} {what}"));
         h_flex()
             .gap_1()
             .px_4()
             .py_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 v_flex()
                     .mr_3()
@@ -219,6 +300,7 @@ impl SyphrApp {
         let (muted, border, surface) = (theme.muted_foreground, theme.border, theme.secondary);
         let (radius, mono) = (theme.radius, theme.mono_font_family.clone());
         let (label, icon, next) = next_step(d.status);
+        let kind_tint = kind_color(d.kind, cx);
         let id = d.id;
         let url = d.url.clone();
         let stat = |title: &'static str, value: AnyElement| {
@@ -227,13 +309,10 @@ impl SyphrApp {
         let text = |s: String| div().truncate().font_weight(FontWeight::MEDIUM).child(s).into_any_element();
 
         v_flex()
-            .m_3()
             .p_4()
             .gap_3()
-            .rounded(theme.radius_lg)
-            .border_1()
+            .border_t_1()
             .border_color(border)
-            .bg(theme.background)
             .child(
                 h_flex()
                     .gap_3()
@@ -245,8 +324,8 @@ impl SyphrApp {
                             .justify_center()
                             .size_9()
                             .rounded(theme.radius)
-                            .bg(surface)
-                            .child(kind_icon(d.kind).text_color(muted)),
+                            .bg(kind_tint.opacity(0.16))
+                            .child(kind_icon(d.kind).text_color(kind_tint)),
                     )
                     .child(
                         v_flex()
@@ -345,7 +424,7 @@ impl SyphrApp {
                     .grid()
                     .grid_cols(6)
                     .gap_4()
-                    .child(stat("Status", status_tag(d.status).xsmall().into_any_element()))
+                    .child(stat("Status", status_label(d.status, cx).into_any_element()))
                     .child(stat("Downloaded", text(size_text(d))))
                     .child(stat("Speed", text(speed_text(d))))
                     .child(stat("Time left", text(eta_text(d))))
@@ -387,12 +466,10 @@ impl SyphrApp {
         let failed = self.checked_with(&[Status::Failed]);
         let count_label = |verb: &str, n: usize| if n > 0 { format!("{verb} {n}") } else { verb.to_string() };
         h_flex()
-            .m_3()
-            .px_3()
+            .px_4()
             .py_2()
             .gap_1()
-            .rounded(theme.radius_lg)
-            .border_1()
+            .border_t_1()
             .border_color(theme.border)
             .bg(theme.secondary)
             .child(Icon::new(Lucide::ListChecks).small().text_color(theme.muted_foreground))
@@ -457,20 +534,34 @@ impl SyphrApp {
                     .on_click(cx.listener(|this, _, _, cx| this.clear_checked(cx))),
             )
     }
+}
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.downloads.iter().filter(|d| d.status == Status::Downloading);
-        let (count, speed) = active.fold((0, 0), |(n, s), d| (n + 1, s + d.bytes_per_sec));
-        let queued = self.downloads.iter().filter(|d| d.status == Status::Queued).count();
-        StatusBar::new().left(div().text_xs().child(format!("{count} downloading · {queued} queued"))).right(
-            h_flex()
-                .gap_1()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(Icon::new(IconName::ArrowDown).xsmall())
-                .child(format!("{}/s", format_bytes(speed))),
-        )
-    }
+/// Lines up with the icons in the `nav_row`s below it.
+fn group_title(title: &'static str, cx: &App) -> Div {
+    h_flex().flex_none().h_8().px_5().text_xs().text_color(cx.theme().muted_foreground).child(title)
+}
+
+/// A sidebar row over an optional `(share, color)` wash.
+fn nav_row(label: impl Into<SharedString>, icon: Icon, wash: Option<(f32, Hsla)>, cx: &App) -> Stateful<Div> {
+    let label = label.into();
+    let radius = cx.theme().radius;
+    h_flex()
+        .id(ElementId::Name(label.clone()))
+        .role(Role::TreeItem)
+        .aria_label(label.clone())
+        .relative()
+        .flex_none()
+        .h_9()
+        .ml_2()
+        .px_3()
+        .gap_2p5()
+        .rounded(radius)
+        .cursor_pointer()
+        .children(wash.filter(|(share, _)| *share > 0.).map(|(share, color)| {
+            div().absolute().top_0().bottom_0().left_0().w(relative(share)).rounded(radius).bg(color.opacity(0.16))
+        }))
+        .child(icon.small())
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// Popover wants a `Selectable` trigger; this lets the link field be one.
@@ -504,7 +595,7 @@ impl RenderOnce for PanelAnchor {
 }
 
 impl Render for SyphrApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let detail = self.selected_download().cloned();
         v_flex()
             .size_full()
@@ -531,21 +622,35 @@ impl Render for SyphrApp {
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.check_all(true, cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, _, cx| this.clear_checked(cx)))
-            .bg(cx.theme().background)
+            .bg(cx.theme().sidebar)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
             .child(
-                h_flex().flex_1().min_h_0().items_stretch().child(self.render_sidebar(window, cx)).child(
+                h_flex().flex_1().min_h_0().items_stretch().child(self.render_sidebar(cx)).child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
+                        .mx_2()
+                        .mb_2()
+                        .rounded(cx.theme().radius_lg)
+                        .bg(cx.theme().background)
+                        .overflow_hidden()
                         .child(self.render_toolbar(cx))
                         .when_some(detail, |this, d| this.child(self.render_detail(&d, cx)))
                         .when(self.checked.len() > 1, |this| this.child(self.render_bulk_bar(cx)))
                         .child({
                             let table = self.table.clone();
-                            div().flex_1().min_h_0().relative().child(DataTable::new(&self.table).small()).on_prepaint(
-                                move |bounds, window, cx| {
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .relative()
+                                .child(
+                                    DataTable::new(&self.table)
+                                        .with_size(Size::Size(cx.theme().font_size * 3.25))
+                                        .header_row_height(cx.theme().font_size * 2.25)
+                                        .bordered(false),
+                                )
+                                .on_prepaint(move |bounds, window, cx| {
                                     let rem = window.rem_size();
                                     table.update(cx, |table, cx| {
                                         let d = table.delegate();
@@ -558,11 +663,9 @@ impl Render for SyphrApp {
                                             DownloadsTable::follow_drag(table, window, cx);
                                         }
                                     })
-                                },
-                            )
+                                })
                         }),
                 ),
             )
-            .child(self.render_status_bar(cx))
     }
 }

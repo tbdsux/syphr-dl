@@ -7,7 +7,6 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     h_flex,
     menu::{DropdownMenu, PopupMenuItem},
-    progress::Progress,
     table::{Column, ColumnSort, TableDelegate, TableState},
     tag::Tag,
     v_flex,
@@ -29,7 +28,7 @@ const ACTIONS: usize = 7;
 const IDS: [&str; 8] = ["check", "name", "progress", "size", "speed", "eta", "status", "actions"];
 const NAMES: [&str; 8] = ["", "Name", "Progress", "Size", "Speed", "Time left", "Status", ""];
 /// Default widths in rems, so columns grow with the text size setting. See `layout` for Name and Actions.
-const WIDTHS: [f32; 8] = [2.75, 14., 13., 11.5, 7., 6., 8.5, 5.75];
+const WIDTHS: [f32; 8] = [3.25, 14., 5.5, 10.5, 6., 6., 7.5, 5.];
 const NAME_MIN: f32 = 14.;
 const COL_MIN: f32 = 4.;
 /// Columns the user can hide in Settings, by id and label.
@@ -207,15 +206,32 @@ pub fn kind_icon(kind: Kind) -> Icon {
     }
 }
 
-pub fn status_tag(status: Status) -> Tag {
-    match status {
-        Status::Downloading => Tag::info().child("Downloading"),
-        Status::Paused => Tag::secondary().child("Paused"),
-        Status::Queued => Tag::secondary().child("Queued"),
-        Status::Completed => Tag::success().child("Completed"),
-        Status::Missing => Tag::warning().child("Missing"),
-        Status::Failed => Tag::danger().child("Failed"),
+/// Each category's own color. The chart tokens are too close together in some themes to tell apart.
+pub fn kind_color(kind: Kind, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match kind {
+        Kind::Video => theme.blue,
+        Kind::Music => theme.magenta,
+        Kind::Document => theme.cyan,
+        Kind::Program => theme.green,
+        Kind::Archive => theme.yellow,
     }
+}
+
+pub fn status_label(status: Status, cx: &App) -> Div {
+    let label = match status {
+        Status::Downloading => "Downloading",
+        Status::Paused => "Paused",
+        Status::Queued => "Queued",
+        Status::Completed => "Completed",
+        Status::Missing => "Missing",
+        Status::Failed => "Failed",
+    };
+    h_flex()
+        .gap_1p5()
+        .text_sm()
+        .child(div().flex_none().size_1p5().rounded_full().bg(progress_color(status, cx)))
+        .child(label)
 }
 
 pub fn progress_color(status: Status, cx: &App) -> Hsla {
@@ -226,6 +242,25 @@ pub fn progress_color(status: Status, cx: &App) -> Hsla {
         Status::Paused | Status::Queued | Status::Missing => theme.muted_foreground,
         Status::Downloading => theme.primary,
     }
+}
+
+/// The row is its own progress bar: a wash up to the overall progress, and along the bottom edge either that
+/// same line or one segment per parallel part. Finished rows stay clean, so the eye goes to what is still moving.
+fn progress_wash(d: &Download, cx: &App) -> Vec<Div> {
+    if d.status == Status::Completed {
+        return Vec::new();
+    }
+    let color = progress_color(d.status, cx);
+    let share = d.progress() / 100.;
+    let edge = h_flex().absolute().left_0().right_0().bottom_0().h(rems(0.15));
+    let edge = if d.fragments.is_empty() {
+        edge.child(div().h_full().bg(color).w(relative(share)))
+    } else {
+        edge.gap_px().children(d.fragments.iter().map(|&f| {
+            div().flex_1().h_full().bg(color.opacity(0.25)).child(div().h_full().bg(color).w(relative(f.clamp(0., 1.))))
+        }))
+    };
+    vec![div().absolute().top_0().bottom_0().left_0().w(relative(share)).bg(color.opacity(0.12)), edge]
 }
 
 /// One segment per parallel part, in file order, so stalled connections stand out.
@@ -239,6 +274,11 @@ pub fn fragment_strip(d: &Download, height: Rems, cx: &App) -> Div {
             .bg(track)
             .child(div().h_full().rounded_full().bg(color).w(relative(f.clamp(0., 1.))))
     }))
+}
+
+/// The site a link points at; the whole link if it has no `scheme://host` shape.
+fn host(url: &str) -> &str {
+    url.split('/').nth(2).unwrap_or(url)
 }
 
 /// The one command that fits the current status: label, icon, and the status it leads to.
@@ -298,7 +338,13 @@ impl TableDelegate for DownloadsTable {
             _ => ColumnSort::Default,
         };
         match c {
-            CHECK => column.resizable(false).movable(false),
+            // Its left padding puts the checkboxes on the same edge as the title above them.
+            CHECK => column.resizable(false).movable(false).paddings(Edges {
+                left: rem,
+                right: px(4.),
+                top: px(4.),
+                bottom: px(4.),
+            }),
             // Resizable only so `follow_drag` can use `fit_col`; its own edge, the table's, snaps back.
             ACTIONS => column.min_width(rem * WIDTHS[ACTIONS]).max_width(px(f32::MAX)).movable(false),
             SIZE | SPEED | ETA => column.text_right().sort(sort),
@@ -323,8 +369,12 @@ impl TableDelegate for DownloadsTable {
     }
 
     fn render_tr(&mut self, row_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> Stateful<Div> {
-        let id = self.rows[row_ix].id;
-        div().id(("download", id)).when(self.checked.contains(&id), |this| this.bg(cx.theme().table_active))
+        let d = &self.rows[row_ix];
+        div()
+            .id(("download", d.id))
+            .relative()
+            .when(self.checked.contains(&d.id), |this| this.bg(cx.theme().table_active))
+            .children(progress_wash(d, cx))
     }
 
     fn render_th(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
@@ -337,7 +387,11 @@ impl TableDelegate for DownloadsTable {
             return div()
                 .id(("th", c))
                 .size_full()
-                .child(NAMES[c])
+                .flex()
+                .items_center()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(div().w_full().child(NAMES[c]))
                 .on_click(cx.listener(move |table, _, _, cx| {
                     cx.stop_propagation();
                     let d = table.delegate_mut();
@@ -418,7 +472,7 @@ impl TableDelegate for DownloadsTable {
         let d = &self.rows[row_ix];
         let muted = cx.theme().muted_foreground;
         let id = d.id;
-        match self.cols[col_ix] {
+        let cell = match self.cols[col_ix] {
             CHECK => {
                 let app = self.app.clone();
                 Checkbox::new(("check", id))
@@ -432,44 +486,23 @@ impl TableDelegate for DownloadsTable {
                     .into_any_element()
             }
             NAME => h_flex()
-                .gap_2()
+                .gap_3()
                 .min_w_0()
-                .child(kind_icon(d.kind).small().text_color(muted))
-                .child(div().flex_1().min_w_0().truncate().child(d.name.clone()))
+                .child(kind_icon(d.kind).text_color(kind_color(d.kind, cx)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().truncate().font_weight(FontWeight::MEDIUM).child(d.name.clone()))
+                        .child(div().truncate().text_xs().text_color(muted).child(host(&d.url).to_string())),
+                )
                 .when(d.source == Source::YtDlp, |this| this.child(Tag::secondary().xsmall().child("yt-dlp")))
                 .into_any_element(),
-            PROGRESS => {
-                let color = progress_color(d.status, cx);
-                v_flex()
-                    .w_full()
-                    .gap_0p5()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .w_full()
-                            .child(
-                                Progress::new(("progress", id))
-                                    .value(d.progress())
-                                    .color(color)
-                                    .accessibility_label(format!("{} progress", d.name))
-                                    .flex_1(),
-                            )
-                            .child(
-                                div()
-                                    .w(rems(2.5))
-                                    .text_right()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(format!("{:.0}%", d.progress())),
-                            ),
-                    )
-                    .when(!d.fragments.is_empty(), |this| this.child(fragment_strip(d, rems(0.25), cx).mr(rems(3.))))
-                    .into_any_element()
-            }
-            SIZE => div().text_color(muted).child(size_text(d)).into_any_element(),
-            SPEED => div().text_color(muted).child(speed_text(d)).into_any_element(),
-            ETA => div().text_color(muted).child(eta_text(d)).into_any_element(),
-            STATUS => status_tag(d.status).xsmall().into_any_element(),
+            PROGRESS => div().text_sm().text_color(muted).child(format!("{:.0}%", d.progress())).into_any_element(),
+            SIZE => div().text_sm().text_color(muted).child(size_text(d)).into_any_element(),
+            SPEED => div().text_sm().text_color(muted).child(speed_text(d)).into_any_element(),
+            ETA => div().text_sm().text_color(muted).child(eta_text(d)).into_any_element(),
+            STATUS => status_label(d.status, cx).into_any_element(),
             _ => {
                 let (label, icon, next) = next_step(d.status);
                 let (app, app2) = (self.app.clone(), self.app.clone());
@@ -516,13 +549,15 @@ impl TableDelegate for DownloadsTable {
                     )
                     .into_any_element()
             }
-        }
+        };
+        // The kit top-aligns cell content, which only looks centered for text as tall as the row.
+        h_flex().size_full().child(div().w_full().min_w_0().child(cell))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIONS, CHECK, ColumnSort, DownloadsTable, ETA, NAME, PROGRESS, SIZE, SPEED, STATUS};
+    use super::{ACTIONS, CHECK, ColumnSort, DownloadsTable, ETA, NAME, PROGRESS, SIZE, SPEED, STATUS, host};
     use crate::download::{Download, Kind, Source, Status};
     use gpui_kit::WeakEntity;
     use std::collections::BTreeSet;
@@ -546,6 +581,13 @@ mod tests {
             fragments: Vec::new(),
             speed_history: Vec::new(),
         }
+    }
+
+    #[test]
+    fn host_of_a_link() {
+        assert_eq!(host("https://nodejs.org/dist/x.tar.xz"), "nodejs.org");
+        assert_eq!(host("https://nodejs.org"), "nodejs.org");
+        assert_eq!(host("not a link"), "not a link");
     }
 
     #[test]
