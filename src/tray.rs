@@ -5,17 +5,34 @@ use image::{Rgba, imageops::FilterType};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::download::{Download, Status, format_bytes};
 use crate::ui::{
     app::{SyphrApp, expand_home},
     settings::{self, AppSettings},
 };
 
+const NO_DOWNLOADS: &str = "No active downloads";
+const MAX_ROWS: usize = 8;
+const MAX_NAME_CHARS: usize = 32;
+
 /// Adds the icon and its menu; it lives until the app quits.
 pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
-    let mut tray = match build() {
-        Ok(tray) => Some(tray),
+    let (mut tray, menu) = match build() {
+        Ok((tray, menu)) => (Some(tray), menu),
         Err(e) => return eprintln!("tray icon: {e}"),
     };
+
+    // The list notifies on every change, including each progress tick.
+    let (mut rows, mut shown) = (Vec::new(), Vec::new());
+    let mut sync = move |app: Entity<SyphrApp>, cx: &mut App| {
+        let labels = row_labels(app.read(cx).downloads());
+        if labels != shown {
+            sync_rows(&menu, &mut rows, &labels);
+            shown = labels;
+        }
+    };
+    sync(app.clone(), cx);
+    cx.observe(&app, sync).detach();
 
     // The handlers run on the platform's thread (a worker on Linux), so hop onto the app's.
     let (tx, rx) = async_channel::unbounded();
@@ -33,7 +50,6 @@ pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Ok(id) = rx.recv().await {
             cx.update(|cx| match id.as_str() {
-                "show" => crate::show_main_window(cx),
                 "new" => {
                     crate::show_main_window(cx);
                     window.update(cx, |_, window, cx| app.update(cx, |this, cx| this.new_download(window, cx))).ok();
@@ -47,7 +63,8 @@ pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
                     settings::open_settings_window(cx);
                 }
                 "quit" => cx.quit(),
-                _ => {}
+                // Show Syphr, a click on the icon, and the download rows.
+                _ => crate::show_main_window(cx),
             });
         }
     })
@@ -74,10 +91,63 @@ fn open_downloads_folder(cx: &mut App) {
     }
 }
 
-fn build() -> Result<TrayIcon, Box<dyn std::error::Error>> {
+/// One line per ongoing download, running ones first, or a single line saying there are none.
+fn row_labels(downloads: &[Download]) -> Vec<String> {
+    let mut active: Vec<&Download> = downloads
+        .iter()
+        .filter(|d| matches!(d.status, Status::Downloading | Status::Paused | Status::Queued))
+        .collect();
+    if active.is_empty() {
+        return vec![NO_DOWNLOADS.to_string()];
+    }
+    active.sort_by_key(|d| d.status);
+    let mut labels: Vec<String> = active.iter().take(MAX_ROWS).map(|d| row_label(d)).collect();
+    if active.len() > MAX_ROWS {
+        labels.push(format!("and {} more…", active.len() - MAX_ROWS));
+    }
+    labels
+}
+
+fn row_label(d: &Download) -> String {
+    let mut name: String = d.name.chars().take(MAX_NAME_CHARS).collect();
+    if d.name.chars().count() > MAX_NAME_CHARS {
+        name.push('…');
+    }
+    // A lone & in a menu label marks a mnemonic, which would eat it from file names.
+    let name = name.replace('&', "&&");
+    let progress =
+        if d.total_bytes.is_some() { format!("{:.0}%", d.progress()) } else { format_bytes(d.received_bytes) };
+    match d.status {
+        Status::Queued => format!("{name} — Queued"),
+        Status::Paused => format!("{name} — Paused · {progress}"),
+        _ if d.bytes_per_sec > 0 => format!("{name} — {progress} · {}/s", format_bytes(d.bytes_per_sec)),
+        _ => format!("{name} — {progress}"),
+    }
+}
+
+/// The rows sit at the top of the menu; clicking one brings the window back.
+fn sync_rows(menu: &Menu, rows: &mut Vec<MenuItem>, labels: &[String]) {
+    for (i, label) in labels.iter().enumerate() {
+        match rows.get(i) {
+            Some(row) => row.set_text(label),
+            None => {
+                let row = MenuItem::new(label, true, None);
+                menu.insert(&row, i).ok();
+                rows.push(row);
+            }
+        }
+    }
+    for row in rows.drain(labels.len()..) {
+        menu.remove(&row).ok();
+    }
+    rows[0].set_enabled(labels[0] != NO_DOWNLOADS);
+}
+
+fn build() -> Result<(TrayIcon, Menu), Box<dyn std::error::Error>> {
     let item = |id: &str, label: &str| MenuItem::with_id(id, label, true, None);
     let menu = Menu::new();
     menu.append_items(&[
+        &PredefinedMenuItem::separator(),
         &item("show", "Show Syphr"),
         &item("new", "New Download…"),
         &PredefinedMenuItem::separator(),
@@ -94,12 +164,13 @@ fn build() -> Result<TrayIcon, Box<dyn std::error::Error>> {
     let builder = builder.with_icon_templated(icon());
     #[cfg(not(target_os = "macos"))]
     let builder = builder.with_icon(icon());
-    Ok(builder
+    let tray = builder
         .with_tooltip("Syphr")
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         // A Mac menu bar icon opens its menu on click; elsewhere a click brings the window back.
         .with_menu_on_left_click(cfg!(target_os = "macos"))
-        .build()?)
+        .build()?;
+    Ok((tray, menu))
 }
 
 /// macOS wants a template image: the glyph alone, which it tints for light or dark menu bars.
@@ -125,8 +196,56 @@ fn icon() -> Icon {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::download::{Kind, Source};
+
+    fn download(name: &str, status: Status, total: Option<u64>, received: u64, speed: u64) -> Download {
+        Download {
+            id: 1,
+            name: name.to_string().into(),
+            url: "https://a.com/a".into(),
+            kind: Kind::Video,
+            source: Source::Direct,
+            status,
+            total_bytes: total,
+            received_bytes: received,
+            bytes_per_sec: speed,
+            folder: "~/Downloads".into(),
+            format: None,
+            selector: None,
+            file_name: None,
+            path: None,
+            fragments: Vec::new(),
+        }
+    }
+
     #[test]
     fn icon_builds() {
         super::icon();
+    }
+
+    #[test]
+    fn rows_list_ongoing_downloads_running_first() {
+        assert_eq!(row_labels(&[download("done", Status::Completed, None, 0, 0)]), [NO_DOWNLOADS]);
+        let rows = row_labels(&[
+            download("queued", Status::Queued, None, 0, 0),
+            download("failed", Status::Failed, None, 0, 0),
+            download("paused", Status::Paused, Some(200), 50, 0),
+            download("a&b", Status::Downloading, Some(200), 100, 2048),
+            download("no size", Status::Downloading, None, 1536, 0),
+        ]);
+        assert_eq!(rows, ["a&&b — 50% · 2.0 KB/s", "no size — 1.5 KB", "paused — Paused · 25%", "queued — Queued"]);
+    }
+
+    #[test]
+    fn rows_cap_the_list_and_long_names() {
+        let many = vec![download("x", Status::Queued, None, 0, 0); MAX_ROWS + 3];
+        let rows = row_labels(&many);
+        assert_eq!(rows.len(), MAX_ROWS + 1);
+        assert_eq!(rows[MAX_ROWS], "and 3 more…");
+
+        let long = "é".repeat(MAX_NAME_CHARS + 1);
+        let row = row_label(&download(&long, Status::Queued, None, 0, 0));
+        assert_eq!(row, format!("{}… — Queued", "é".repeat(MAX_NAME_CHARS)));
     }
 }

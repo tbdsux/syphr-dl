@@ -174,6 +174,10 @@ impl SyphrApp {
         this
     }
 
+    pub fn downloads(&self) -> &[Download] {
+        &self.downloads
+    }
+
     fn has_active(&self) -> bool {
         self.downloads.iter().any(|d| matches!(d.status, Status::Downloading | Status::Queued))
     }
