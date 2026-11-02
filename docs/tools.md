@@ -11,6 +11,8 @@ Media downloads need [yt-dlp](https://github.com/yt-dlp/yt-dlp), and every quali
 
 So a Homebrew install always wins over Syphr's copy.
 
+Each path in Settings has a **Select…** button that opens a file picker and stores the chosen file's full path.
+
 ## Installing them
 
 When either is missing, Settings and the add-download panel show **Install required tools**. It downloads only what's missing into:

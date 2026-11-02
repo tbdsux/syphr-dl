@@ -8,6 +8,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputEvent, InputState},
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -230,6 +231,62 @@ fn check_tools(window: &mut Window, cx: &mut App) {
     .detach();
 }
 
+/// A path input with a button that opens the file picker; the kit's own input field has no slot for one.
+fn tool_path_field(
+    title: &'static str,
+    get: fn(&AppSettings) -> &String,
+    set: fn(&mut AppSettings, String),
+    default: String,
+) -> SettingField<SharedString> {
+    let reset_to = default.clone();
+    SettingField::render(move |_, window, cx| {
+        let value: SharedString = get(AppSettings::get(cx)).clone().into();
+        let input = window.use_keyed_state(title, cx, |window, cx| {
+            cx.subscribe_self(move |input: &mut InputState, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let path = input.value().to_string();
+                    AppSettings::update(cx, |s| set(s, path));
+                }
+            })
+            .detach();
+            InputState::new(window, cx).default_value(value.clone())
+        });
+        if input.read(cx).value() != value {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+        h_flex().w_full().gap_2().child(Input::new(&input).aria_label(title).flex_1()).child(
+            Button::new(title).outline().label("Select…").on_click(move |_, window, cx| select_tool(set, window, cx)),
+        )
+    })
+    .on_reset(
+        move |cx| get(AppSettings::get(cx)) != &default,
+        move |_, cx| AppSettings::update(cx, |s| set(s, reset_to.clone())),
+    )
+}
+
+fn select_tool(set: fn(&mut AppSettings, String), window: &mut Window, cx: &mut App) {
+    let handle = window.window_handle();
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: Some("Select".into()),
+    });
+    cx.spawn(async move |cx| match picked.await {
+        Ok(Ok(Some(paths))) => {
+            if let Some(path) = paths.first() {
+                cx.update(|cx| AppSettings::update(cx, |s| set(s, path.display().to_string())));
+            }
+        }
+        Ok(Ok(None)) | Err(_) => {}
+        Ok(Err(e)) => {
+            let message = format!("Couldn't open the file picker: {e}. Type the full path instead.");
+            cx.update_window(handle, |_, window, cx| window.push_notification(message, cx)).ok();
+        }
+    })
+    .detach();
+}
+
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let defaults = AppSettings::default();
@@ -401,25 +458,23 @@ impl Render for SettingsView {
             SettingGroup::new().items([
                 SettingItem::new(
                     "yt-dlp path",
-                    SettingField::input(
-                        |cx: &App| AppSettings::get(cx).ytdlp_path.clone().into(),
-                        |value: SharedString, cx: &mut App| {
-                            AppSettings::update(cx, |s| s.ytdlp_path = value.to_string())
-                        },
-                    )
-                    .default_value(defaults.ytdlp_path.clone()),
+                    tool_path_field(
+                        "yt-dlp path",
+                        |s| &s.ytdlp_path,
+                        |s, path| s.ytdlp_path = path,
+                        defaults.ytdlp_path.clone(),
+                    ),
                 )
                 .layout(Axis::Vertical)
                 .description("Command name or full path. youtube-dl works too."),
                 SettingItem::new(
                     "ffmpeg path",
-                    SettingField::input(
-                        |cx: &App| AppSettings::get(cx).ffmpeg_path.clone().into(),
-                        |value: SharedString, cx: &mut App| {
-                            AppSettings::update(cx, |s| s.ffmpeg_path = value.to_string())
-                        },
-                    )
-                    .default_value(defaults.ffmpeg_path.clone()),
+                    tool_path_field(
+                        "ffmpeg path",
+                        |s| &s.ffmpeg_path,
+                        |s, path| s.ffmpeg_path = path,
+                        defaults.ffmpeg_path.clone(),
+                    ),
                 )
                 .layout(Axis::Vertical)
                 .description("Required to join video and audio. Only “Audio only” downloads work without it."),
