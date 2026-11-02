@@ -31,7 +31,7 @@ Closing the main window quits Syphr unless a download is running or queued; then
 ## Adding a download
 
 1. The link field (⌘N, Ctrl+N on Windows and Linux) opens in the title bar. With *auto paste* on, a copied link is filled in.
-2. After typing settles for 400 ms, the link is looked up:
+2. After typing settles for 400 ms, the panel opens and the link is looked up. A pasted link opens the panel at once, but the lookup still waits:
    - **Media sites** (`ytdlp::handles`: YouTube, Vimeo, Twitch, SoundCloud, Dailymotion, X) run `yt-dlp -J`. The format list becomes a few choices: *Best quality*, one per resolution, and *Audio only*.
    - **Everything else** gets a one-byte ranged GET (`engine::inspect`) that reports the file name, size, and whether the server supports byte ranges.
 3. The panel shows the result. You can rename the file, pick a quality, and change the save folder.

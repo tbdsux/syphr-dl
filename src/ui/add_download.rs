@@ -41,6 +41,8 @@ pub struct AddDownload {
     /// Where the link field was last drawn, to tell a click on it from one outside the panel.
     pub field_bounds: Bounds<Pixels>,
     open: bool,
+    /// Typing waits to open the panel; set until the wait ends or the user dismisses it.
+    open_pending: bool,
     lookup: Lookup,
     choice: usize,
     _lookup_task: Option<Task<()>>,
@@ -65,6 +67,7 @@ impl AddDownload {
             auto_name: String::new(),
             field_bounds: Bounds::default(),
             open: false,
+            open_pending: false,
             lookup: Lookup::NotNeeded,
             choice: 0,
             _lookup_task: None,
@@ -83,6 +86,7 @@ impl AddDownload {
     /// Opens only when there is a link to act on.
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         let open = open && !self.url_text(cx).is_empty();
+        self.open_pending = false;
         if self.open != open {
             self.open = open;
             cx.notify();
@@ -103,6 +107,7 @@ impl AddDownload {
         self.lookup = Lookup::NotNeeded;
         self._lookup_task = None;
         self.open = false;
+        self.open_pending = false;
         cx.notify();
     }
 
@@ -116,6 +121,7 @@ impl AddDownload {
         }
         self.url.update(cx, |state, cx| state.set_value(link, window, cx));
         self.url_changed(cx);
+        self.set_open(true, cx);
         true
     }
 
@@ -127,25 +133,39 @@ impl AddDownload {
         let url = self.url_text(cx);
         // Replacing the task drops (cancels) any lookup for the previous text.
         self._lookup_task = None;
-        self.open = !url.is_empty();
-        if !is_web_link(&url) {
-            self.lookup = Lookup::NotNeeded;
-            cx.notify();
+        let is_link = is_web_link(&url);
+        // Right away, so Start can't submit the previous text's result during the wait.
+        self.lookup = if is_link { Lookup::Loading } else { Lookup::NotNeeded };
+        self.open_pending = !url.is_empty();
+        if url.is_empty() {
+            self.open = false;
+        }
+        cx.notify();
+        if url.is_empty() {
             return;
         }
-        self.lookup = Lookup::Loading;
-        cx.notify();
-        let bin = ytdlp::handles(&url).then(|| crate::tools::resolve(&AppSettings::get(cx).ytdlp_path));
         self._lookup_task = Some(cx.spawn(async move |this, cx| {
-            // Let typing or a paste settle before starting a process or request.
+            // Let typing or a paste settle before opening the panel or starting a process or request.
             cx.background_executor().timer(Duration::from_millis(400)).await;
-            let result = match bin {
-                Some(bin) => cx.background_spawn(async move { ytdlp::probe(&bin, &url) }).await.map(Lookup::Ready),
+            let Ok(ytdlp_path) = this.update(cx, |this, cx| {
+                this.open |= std::mem::take(&mut this.open_pending);
+                cx.notify();
+                AppSettings::get(cx).ytdlp_path.clone()
+            }) else {
+                return;
+            };
+            if !is_link {
+                return;
+            }
+            let result = if ytdlp::handles(&url) {
+                let probe = async move { ytdlp::probe(&crate::tools::resolve(&ytdlp_path), &url) };
+                cx.background_spawn(probe).await.map(Lookup::Ready)
+            } else {
                 // reqwest needs the tokio runtime; the handle is awaited from here.
-                None => match engine::RUNTIME.spawn(async move { engine::inspect(&url).await }).await {
+                match engine::RUNTIME.spawn(async move { engine::inspect(&url).await }).await {
                     Ok(result) => result.map(Lookup::File),
                     Err(e) => Err(e.to_string()),
-                },
+                }
             };
             this.update(cx, |this, cx| {
                 this.choice = 0;
