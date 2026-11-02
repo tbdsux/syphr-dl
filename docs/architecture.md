@@ -22,7 +22,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Startup
 
-`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the Geist fonts and bundled themes, reads settings, binds shortcuts, builds the menus, opens the main window, and adds the tray icon. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`), and `update::start` begins checking for app updates.
+`main` creates the GPUI app, sets the identity `dev.tbdsux.syphr-dl` / "Syphr", loads the DM Sans fonts and bundled themes, reads settings, binds shortcuts, builds the menus, opens the main window, and adds the tray icon. Syphr's own copy of yt-dlp is updated in the background (`yt-dlp -U`), and `update::start` begins checking for app updates.
 
 ## Running in the background
 

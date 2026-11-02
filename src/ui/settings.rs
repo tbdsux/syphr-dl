@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::download::format_bytes;
 
-pub const FONT_FAMILY: &str = "Geist";
+pub const FONT_FAMILY: &str = "DM Sans";
 pub const SYSTEM_THEME: &str = "System";
 /// Smallest and largest base text size in points; everything else scales with it.
 pub const TEXT_SIZES: (f64, f64) = (11., 20.);

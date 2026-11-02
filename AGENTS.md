@@ -11,7 +11,7 @@ Download manager app in Rust (edition 2024), built on [GPUI Kit](https://crates.
 - `src/tools.rs` — finds/installs yt-dlp and ffmpeg (pinned SHA-256 checksums)
 - `src/ui/` — windows, downloads table, add-download dialog, settings
 - `docs/` — how the app and engine work; keep it in sync when behavior changes
-- `assets/` — bundled fonts (Geist) and themes
+- `assets/` — bundled fonts (DM Sans) and themes
 
 ## Commands
 

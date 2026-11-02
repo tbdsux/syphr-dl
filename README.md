@@ -111,4 +111,4 @@ Other distributions need the equivalent development packages.
 
 ## License
 
-[MIT](LICENSE). Bundled Geist fonts are under the [SIL Open Font License](assets/fonts/OFL.txt).
+[MIT](LICENSE). Bundled DM Sans fonts are under the [SIL Open Font License](assets/fonts/OFL.txt).

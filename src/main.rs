@@ -84,10 +84,10 @@ fn main() {
 
         cx.text_system()
             .add_fonts(vec![
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-SemiBold.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Bold.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/DMSans-Regular.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/DMSans-Medium.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/DMSans-SemiBold.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/DMSans-Bold.ttf").as_slice()),
             ])
             .expect("bundled fonts load");
         cx.set_global(settings::AppSettings::load());
