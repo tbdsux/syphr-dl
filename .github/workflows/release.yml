@@ -67,19 +67,37 @@ jobs:
           plutil -lint $app/Contents/Info.plist
 
       # shortcut: ad hoc signature, so Gatekeeper warns on first open; switch to a Developer ID + notarytool once there's an Apple Developer account.
-      - name: Sign and package DMG
+      # The -full files add yt-dlp and ffmpeg. The updater matches exact names, so it only ever installs the regular ones;
+      # a full build's tools live in the data folder by then (see docs/tools.md).
+      - name: Sign and package DMGs
         run: |
-          codesign --force --sign - dist/Syphr.app
-          codesign --verify --deep --strict --verbose=2 dist/Syphr.app
-          mkdir -p dist/dmg-root
+          pack() {
+            codesign --force --sign - "$1/Syphr.app"
+            codesign --verify --deep --strict --verbose=2 "$1/Syphr.app"
+            ln -s /Applications "$1/Applications"
+            hdiutil create -volname Syphr -srcfolder "$1" -ov -format UDZO "$2"
+          }
+          mkdir -p dist/dmg-root dist/full-root
           cp -R dist/Syphr.app dist/dmg-root/
-          ln -s /Applications dist/dmg-root/Applications
-          hdiutil create -volname Syphr -srcfolder dist/dmg-root -ov -format UDZO "dist/Syphr-$VERSION.dmg"
+          cp -R dist/Syphr.app dist/full-root/
+          pack dist/dmg-root "dist/Syphr-$VERSION.dmg"
+
+          dist/Syphr.app/Contents/MacOS/syphr-dl --fetch-tools dist/tools
+          for tool in ffmpeg ffprobe; do
+            lipo -create -output "dist/tools/$tool" "dist/tools/aarch64/$tool" "dist/tools/x86_64/$tool"
+            codesign --force --sign - "dist/tools/$tool"
+          done
+          rm -rf dist/tools/aarch64 dist/tools/x86_64
+          cp -R licenses/. dist/tools/
+          cp -R dist/tools dist/full-root/Syphr.app/Contents/Resources/tools
+          pack dist/full-root "dist/Syphr-$VERSION-full.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: dist/Syphr-${{ env.VERSION }}.dmg
+          path: |
+            dist/Syphr-${{ env.VERSION }}.dmg
+            dist/Syphr-${{ env.VERSION }}-full.dmg
 
   windows:
     needs: check
@@ -103,6 +121,11 @@ jobs:
           cargo build --release --locked
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target/release/syphr-dl.exe -DestinationPath "dist/Syphr-$env:VERSION-windows-x64.zip"
+          # A GUI-subsystem exe, so PowerShell wouldn't wait for it or see its exit code on its own.
+          $fetch = Start-Process target/release/syphr-dl.exe -ArgumentList "--fetch-tools", "dist/tools" -Wait -PassThru
+          if ($fetch.ExitCode) { exit 1 }
+          Copy-Item licenses/* dist/tools/
+          Compress-Archive -Path target/release/syphr-dl.exe, dist/tools -DestinationPath "dist/Syphr-$env:VERSION-windows-x64-full.zip"
           cargo install cargo-packager --version 0.11.8 --locked
           cargo packager --release --formats nsis
           Move-Item dist/pkg/*-setup.exe "dist/Syphr-$env:VERSION-windows-x64-setup.exe"
@@ -112,6 +135,7 @@ jobs:
           name: windows
           path: |
             dist/Syphr-${{ env.VERSION }}-windows-x64.zip
+            dist/Syphr-${{ env.VERSION }}-windows-x64-full.zip
             dist/Syphr-${{ env.VERSION }}-windows-x64-setup.exe
 
   linux:
@@ -140,6 +164,9 @@ jobs:
           cargo build --release --locked
           mkdir -p dist
           tar -czf "dist/Syphr-$VERSION-linux-x64.tar.gz" -C target/release syphr-dl
+          target/release/syphr-dl --fetch-tools dist/tools
+          cp -R licenses/. dist/tools/
+          tar -czf "dist/Syphr-$VERSION-linux-x64-full.tar.gz" -C target/release syphr-dl -C "$PWD/dist" tools
           cargo install cargo-packager --version 0.11.8 --locked
           cargo packager --release --formats deb,appimage
           mv dist/pkg/*.deb "dist/Syphr-$VERSION-linux-amd64.deb"
@@ -150,6 +177,7 @@ jobs:
           name: linux
           path: |
             dist/Syphr-${{ env.VERSION }}-linux-x64.tar.gz
+            dist/Syphr-${{ env.VERSION }}-linux-x64-full.tar.gz
             dist/Syphr-${{ env.VERSION }}-linux-amd64.deb
             dist/Syphr-${{ env.VERSION }}-linux-x86_64.AppImage
 

@@ -76,6 +76,15 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    if let [_, flag, dir] = std::env::args_os().collect::<Vec<_>>().as_slice()
+        && flag == "--fetch-tools"
+    {
+        if let Err(e) = tools::fetch_for_bundle(std::path::Path::new(dir)) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let app = gpui_kit::application().with_assets(AppAssets);
     app.on_reopen(show_main_window);
     app.run(|cx| {
@@ -122,6 +131,7 @@ fn main() {
         let (window, view) =
             gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::SyphrApp::new(window, cx)))
                 .expect("failed to open window");
+        tools::install_shipped(window, cx);
         tray::install(window, view, cx);
         cx.activate(true);
     });

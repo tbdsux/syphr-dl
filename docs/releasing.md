@@ -25,7 +25,8 @@ Runs when a `v*` tag is pushed. It follows the [GPUI Kit packaging guide](https:
 5. Packs `Syphr-vX.Y.Z.dmg` with an Applications shortcut.
 6. Alongside, a Windows job builds `syphr-dl.exe`, zips it as `Syphr-vX.Y.Z-windows-x64.zip`, and packs a per-user NSIS installer, `Syphr-vX.Y.Z-windows-x64-setup.exe`.
 7. A Linux job builds `syphr-dl` on Ubuntu 22.04 (for an older glibc baseline) and packs it as `Syphr-vX.Y.Z-linux-x64.tar.gz`, `Syphr-vX.Y.Z-linux-amd64.deb` and `Syphr-vX.Y.Z-linux-x86_64.AppImage`.
-8. Once all builds pass, publishes a GitHub release with every file, a `SHA256SUMS` of them, and generated notes. The in-app updater only offers releases that have `SHA256SUMS` (see [updates.md](updates.md)).
+8. Each job also packs a `-full` download with yt-dlp and ffmpeg inside: `Syphr-vX.Y.Z-full.dmg`, `Syphr-vX.Y.Z-windows-x64-full.zip` and `Syphr-vX.Y.Z-linux-x64-full.tar.gz` (see [tools.md](tools.md#full-builds)). The installers (.deb, AppImage, NSIS) only come in the regular form.
+9. Once all builds pass, publishes a GitHub release with every file, a `SHA256SUMS` of them, and generated notes. The in-app updater only offers releases that have `SHA256SUMS` (see [updates.md](updates.md)).
 
 The installers come from [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) (pinned in `release.yml`), configured under `[package.metadata.packager]` in `Cargo.toml`. It names its output `syphr-dl_<version>_<arch>…`, so the jobs rename each file to the `Syphr-<tag>…` names the updater looks for.
 

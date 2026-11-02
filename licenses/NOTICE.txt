@@ -1,0 +1,14 @@
+This folder holds yt-dlp, ffmpeg and ffprobe. They are separate programs that Syphr runs, and they are not
+covered by Syphr's MIT license.
+
+yt-dlp
+  License: GPLv3 or later for this standalone build (GPL-3.0.txt). See https://github.com/yt-dlp/yt-dlp#licensing
+  Source: https://github.com/yt-dlp/yt-dlp
+
+ffmpeg and ffprobe
+  License: GPLv3 for these builds (GPL-3.0.txt). See https://www.ffmpeg.org/legal.html
+  Source: https://www.ffmpeg.org/download.html#get-sources
+  Built by:
+    macOS    Martin Riedl, https://ffmpeg.martin-riedl.de (build scripts: https://git.martin-riedl.de/ffmpeg/build-script)
+    Windows  Gyan Doshi, https://www.gyan.dev/ffmpeg/builds/
+    Linux    John Van Sickle, https://johnvansickle.com/ffmpeg/

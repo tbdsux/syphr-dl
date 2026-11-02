@@ -27,7 +27,7 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 
 ### macOS
 
-Download `Syphr-vX.Y.Z.dmg` from [Releases](../../releases), open it, and drag Syphr into Applications.
+Download `Syphr-vX.Y.Z.dmg` from [Releases](../../releases), open it, and drag Syphr into Applications. `Syphr-vX.Y.Z-full.dmg` is the same app with yt-dlp and ffmpeg included, for setting up without a download later.
 
 Releases aren't notarized yet, so macOS blocks the first launch. Right-click Syphr in Applications and choose **Open**, or run:
 
@@ -43,7 +43,7 @@ From [Releases](../../releases), download one of:
 
 - `Syphr-vX.Y.Z-linux-amd64.deb` for Debian and Ubuntu: `sudo apt install ./Syphr-vX.Y.Z-linux-amd64.deb`. Update it the same way with each new `.deb`.
 - `Syphr-vX.Y.Z-linux-x86_64.AppImage`: make it executable (`chmod +x`) and run it. It updates itself.
-- `Syphr-vX.Y.Z-linux-x64.tar.gz`: unpack it and run `syphr-dl`.
+- `Syphr-vX.Y.Z-linux-x64.tar.gz`: unpack it and run `syphr-dl`. `Syphr-vX.Y.Z-linux-x64-full.tar.gz` also includes yt-dlp and ffmpeg.
 
 Syphr needs a Wayland or X11 session and a Vulkan driver. On other architectures, build from source (see [Linux build requirements](#linux-1)).
 
@@ -55,7 +55,7 @@ sudo apt install ffmpeg
 
 ### Windows
 
-Download `Syphr-vX.Y.Z-windows-x64-setup.exe` from [Releases](../../releases) and run it. It installs for your user only, with no admin prompt. Or download `Syphr-vX.Y.Z-windows-x64.zip`, unzip it, and run `syphr-dl.exe`.
+Download `Syphr-vX.Y.Z-windows-x64-setup.exe` from [Releases](../../releases) and run it. It installs for your user only, with no admin prompt. Or download `Syphr-vX.Y.Z-windows-x64.zip`, unzip it, and run `syphr-dl.exe`. `Syphr-vX.Y.Z-windows-x64-full.zip` also includes yt-dlp and ffmpeg.
 
 Releases aren't code-signed yet, so SmartScreen may warn on first launch. Choose **More info**, then **Run anyway**.
 
@@ -111,4 +111,4 @@ Other distributions need the equivalent development packages.
 
 ## License
 
-[MIT](LICENSE). Bundled DM Sans fonts are under the [SIL Open Font License](assets/fonts/OFL.txt).
+[MIT](LICENSE). Bundled DM Sans fonts are under the [SIL Open Font License](assets/fonts/OFL.txt). The `-full` downloads also include yt-dlp and ffmpeg, separate programs under the GPLv3 (see [licenses](licenses/NOTICE.txt)).

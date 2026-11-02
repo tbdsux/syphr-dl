@@ -10,6 +10,8 @@ At launch and every 6 hours, while **Settings → Updates → Check for updates 
 - is a stable release, unless the running build is itself a beta (then betas count too),
 - has this install's file (`Syphr-<tag>.dmg`, `-windows-x64.zip`, `-linux-x86_64.AppImage` when running as an AppImage, else `-linux-x64.tar.gz`) and a `SHA256SUMS`.
 
+The `-full` downloads are never offered. A full build updates to the regular file, and its tools stay in place in the data folder (see [tools.md](tools.md#full-builds)).
+
 An available update shows as **Update to vX.Y.Z** at the bottom of the sidebar and on the Updates settings page, which also has **Check for updates**.
 
 ## Installing

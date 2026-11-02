@@ -56,6 +56,14 @@ const FFMPEG_X86_64: [(&str, &str, &str); 2] = [
         "2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd",
     ),
 ];
+/// Only packed into the full Linux build; the app itself doesn't download it (see `download_ffmpeg`).
+/// Not the martin-riedl Linux build: that one is configured with `--enable-nonfree`, which can't be redistributed.
+#[cfg(not(any(windows, target_os = "macos")))]
+const FFMPEG_LINUX: (&str, &str, &str) = (
+    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz",
+    "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
+    "ffmpeg-7.0.2-amd64-static",
+);
 /// gyan.dev's essentials build (x64; Windows on Arm runs it emulated), with ffmpeg.exe and ffprobe.exe under `bin/`.
 #[cfg(windows)]
 const FFMPEG_WINDOWS: (&str, &str, &str) = (
@@ -87,6 +95,34 @@ pub fn find(bin: &str) -> Option<PathBuf> {
 /// What to run: the found path, or the name as typed so errors mention it.
 pub fn resolve(bin: &str) -> String {
     find(bin).map(|p| p.display().to_string()).unwrap_or_else(|| bin.to_string())
+}
+
+/// A tool shipped inside the full build (see release.yml); None in the regular build.
+fn bundled(name: &str) -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let dir = if cfg!(target_os = "macos") { dir.parent()?.join("Resources") } else { dir };
+    Some(dir.join("tools").join(format!("{name}{EXE_SUFFIX}"))).filter(|p| p.is_file())
+}
+
+pub fn is_full_build() -> bool {
+    bundled("yt-dlp").is_some()
+}
+
+/// Copies a bundled tool out to `dir`. yt-dlp has to update itself, and app updates install the regular build, so
+/// the copies inside the app can't be the ones in use.
+fn install_bundled(src: &Path, dir: &Path, name: &str) -> Result<PathBuf, String> {
+    // Read and rewritten, because a copy would carry over the DMG's quarantine flag and macOS would block the tool.
+    place(&fs::read(src).map_err(|e| e.to_string())?, dir, name)
+}
+
+/// Writes an executable into `dir` in one step, so a failed install never leaves half a tool behind.
+fn place(bytes: &[u8], dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let tmp = dir.join(format!("{name}.download"));
+    fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    make_executable(&tmp)?;
+    let path = dir.join(format!("{name}{EXE_SUFFIX}"));
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 pub fn missing(cx: &App) -> bool {
@@ -135,12 +171,12 @@ pub fn install(window: AnyWindowHandle, cx: &mut App) {
         let result: Result<(), String> = async {
             fs::create_dir_all(&dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
             if need_ytdlp {
-                cx.update(|cx| set_stage(Some("Downloading yt-dlp…"), cx));
+                cx.update(|cx| set_stage(Some("Installing yt-dlp…"), cx));
                 let ytdlp = RUNTIME.spawn(install_ytdlp(dir.clone())).await.map_err(|e| e.to_string())??;
                 cx.update(|cx| AppSettings::update(cx, |s| s.ytdlp_path = ytdlp.display().to_string()));
             }
             if need_ffmpeg {
-                cx.update(|cx| set_stage(Some("Downloading ffmpeg…"), cx));
+                cx.update(|cx| set_stage(Some("Installing ffmpeg…"), cx));
                 let ffmpeg = RUNTIME.spawn(install_ffmpeg(dir.clone())).await.map_err(|e| e.to_string())??;
                 cx.update(|cx| AppSettings::update(cx, |s| s.ffmpeg_path = ffmpeg.display().to_string()));
             }
@@ -157,6 +193,23 @@ pub fn install(window: AnyWindowHandle, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// On a full build's first launch, installs what it ships without waiting to be asked.
+pub fn install_shipped(window: AnyWindowHandle, cx: &mut App) {
+    if missing(cx) && is_full_build() {
+        install(window, cx);
+    }
+}
+
+/// `syphr-dl --fetch-tools <dir>`: release.yml fills the full build with this, so the pinned builds are defined once.
+pub fn fetch_for_bundle(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let dir = dir.to_path_buf();
+    RUNTIME.block_on(async move {
+        install_ytdlp(dir.clone()).await?;
+        fetch_ffmpeg(&dir).await
+    })
 }
 
 /// Lets Syphr's own yt-dlp update itself in the background; a Homebrew copy is left to Homebrew.
@@ -180,6 +233,9 @@ pub fn update_ytdlp(cx: &mut App) {
 }
 
 async fn install_ytdlp(dir: PathBuf) -> Result<PathBuf, String> {
+    if let Some(src) = bundled("yt-dlp") {
+        return install_bundled(&src, &dir, "yt-dlp");
+    }
     let sums = String::from_utf8_lossy(&fetch(YTDLP_SUMS).await?).into_owned();
     let expected = sums
         .lines()
@@ -189,21 +245,30 @@ async fn install_ytdlp(dir: PathBuf) -> Result<PathBuf, String> {
     let url = format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{YTDLP_ASSET}");
     let bytes = fetch(&url).await?;
     verify(&bytes, &expected, "yt-dlp")?;
-    let tmp = dir.join("yt-dlp.download");
-    fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("yt-dlp{EXE_SUFFIX}"));
-    make_executable(&tmp)?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    Ok(path)
+    place(&bytes, &dir, "yt-dlp")
+}
+
+async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
+    let Some(src) = bundled("ffmpeg") else { return download_ffmpeg(dir).await };
+    if let Some(ffprobe) = bundled("ffprobe") {
+        install_bundled(&ffprobe, &dir, "ffprobe")?;
+    }
+    install_bundled(&src, &dir, "ffmpeg")
 }
 
 #[cfg(target_os = "macos")]
-async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
+async fn download_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     let builds = match std::env::consts::ARCH {
         "aarch64" => FFMPEG_ARM64,
         "x86_64" => FFMPEG_X86_64,
         arch => return Err(format!("no ffmpeg build for {arch}")),
     };
+    unpack_builds(builds, &dir).await?;
+    Ok(dir.join("ffmpeg"))
+}
+
+#[cfg(target_os = "macos")]
+async fn unpack_builds(builds: [(&str, &str, &str); 2], dir: &Path) -> Result<(), String> {
     for (name, url, sha) in builds {
         let bytes = fetch(url).await?;
         verify(&bytes, sha, name)?;
@@ -211,24 +276,59 @@ async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
         fs::write(&zip, bytes).map_err(|e| e.to_string())?;
         // `ditto` ships with macOS and unzips without adding a dependency.
         let ok =
-            Command::new("/usr/bin/ditto").arg("-x").arg("-k").arg(&zip).arg(&dir).status().is_ok_and(|s| s.success());
+            Command::new("/usr/bin/ditto").arg("-x").arg("-k").arg(&zip).arg(dir).status().is_ok_and(|s| s.success());
         fs::remove_file(&zip).ok();
         if !ok {
             return Err(format!("couldn't unpack {name}"));
         }
         make_executable(&dir.join(name))?;
     }
-    Ok(dir.join("ffmpeg"))
+    Ok(())
+}
+
+/// Both architectures, each in its own folder: release.yml joins them into universal binaries.
+#[cfg(target_os = "macos")]
+async fn fetch_ffmpeg(dir: &Path) -> Result<(), String> {
+    for (arch, builds) in [("aarch64", FFMPEG_ARM64), ("x86_64", FFMPEG_X86_64)] {
+        let dir = dir.join(arch);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        unpack_builds(builds, &dir).await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+async fn fetch_ffmpeg(dir: &Path) -> Result<(), String> {
+    let (url, sha, inner) = FFMPEG_LINUX;
+    let bytes = fetch(url).await?;
+    verify(&bytes, sha, "ffmpeg")?;
+    let archive = dir.join("ffmpeg.tar.xz");
+    fs::write(&archive, bytes).map_err(|e| e.to_string())?;
+    let ok = Command::new("tar")
+        .args(["--strip-components", "1", "-xf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir)
+        .args([format!("{inner}/ffmpeg"), format!("{inner}/ffprobe")])
+        .status()
+        .is_ok_and(|s| s.success());
+    fs::remove_file(&archive).ok();
+    if ok { Ok(()) } else { Err("couldn't unpack ffmpeg".into()) }
+}
+
+#[cfg(windows)]
+async fn fetch_ffmpeg(dir: &Path) -> Result<(), String> {
+    download_ffmpeg(dir.to_path_buf()).await.map(drop)
 }
 
 // shortcut: no pinned Linux build, since unpacking one needs unzip or xz the system may lack; pin a static build if users ask.
 #[cfg(not(any(windows, target_os = "macos")))]
-async fn install_ffmpeg(_: PathBuf) -> Result<PathBuf, String> {
+async fn download_ffmpeg(_: PathBuf) -> Result<PathBuf, String> {
     Err("install ffmpeg with your package manager, e.g. `sudo apt install ffmpeg`".into())
 }
 
 #[cfg(windows)]
-async fn install_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
+async fn download_ffmpeg(dir: PathBuf) -> Result<PathBuf, String> {
     let (url, sha, inner) = FFMPEG_WINDOWS;
     let bytes = fetch(url).await?;
     verify(&bytes, sha, "ffmpeg")?;
@@ -275,7 +375,7 @@ fn make_executable(_: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find, resolve, verify};
+    use super::{find, place, resolve, verify};
 
     #[test]
     fn finds_full_paths_and_names() {
@@ -289,6 +389,21 @@ mod tests {
         assert_eq!(find("/no/such/tool"), None);
         assert_eq!(find("no-such-tool-syphr"), None);
         assert_eq!(resolve("no-such-tool-syphr"), "no-such-tool-syphr");
+    }
+
+    #[test]
+    fn places_a_runnable_tool_and_no_leftovers() {
+        let dir = std::env::temp_dir().join(format!("syphr-place-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = place(b"tool", &dir, "tool").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"tool");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
