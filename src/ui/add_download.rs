@@ -233,7 +233,7 @@ impl AddDownload {
                 .items_start()
                 .text_sm()
                 .child(Icon::new(IconName::CircleX).small().text_color(cx.theme().danger))
-                .child(div().flex_1().child(message.clone()))
+                .child(div().flex_1().min_w_0().child(message.clone()))
                 .when(ytdlp::handles(&self.url_text(cx)), |this| {
                     this.children(crate::tools::install_button(cx).map(|b| b.small()))
                 })
