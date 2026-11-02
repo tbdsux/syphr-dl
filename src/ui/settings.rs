@@ -5,7 +5,7 @@ use std::{
 };
 
 use gpui_kit::component::{
-    Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, Theme, ThemeRegistry, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -183,7 +183,7 @@ pub fn open_settings_window(cx: &mut App) {
     }
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(760.), px(560.)), cx)),
-        window_min_size: Some(size(px(600.), px(420.))),
+        window_min_size: Some(size(px(720.), px(520.))),
         ..TitleBar::window_options()
     };
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| SettingsView)) {
@@ -310,6 +310,8 @@ impl Render for SettingsView {
                     )
                     .default_value(defaults.download_dir.clone()),
                 )
+                // Paths are long: full width shows more of them, and the kit's fixed field overflows narrow windows.
+                .layout(Axis::Vertical)
                 .description("Default folder for new downloads."),
                 SettingItem::new(
                     "Simultaneous downloads",
@@ -407,6 +409,7 @@ impl Render for SettingsView {
                     )
                     .default_value(defaults.ytdlp_path.clone()),
                 )
+                .layout(Axis::Vertical)
                 .description("Command name or full path. youtube-dl works too."),
                 SettingItem::new(
                     "ffmpeg path",
@@ -418,6 +421,7 @@ impl Render for SettingsView {
                     )
                     .default_value(defaults.ffmpeg_path.clone()),
                 )
+                .layout(Axis::Vertical)
                 .description("Required to join video and audio. Only “Audio only” downloads work without it."),
                 SettingItem::new(
                     "Check installation",
@@ -487,7 +491,9 @@ impl Render for SettingsView {
                                 crate::apply_shortcuts(cx);
                             },
                         )
-                        .default_value(SharedString::from(shortcut.default)),
+                        .default_value(SharedString::from(shortcut.default))
+                        // Narrower than the kit's default, which overflows the row at the smaller window sizes.
+                        .w(rems(10.)),
                     );
                     let keys = AppSettings::get(cx).shortcut(shortcut);
                     match crate::shortcut_bindings(shortcut, &keys, cx) {
@@ -498,10 +504,11 @@ impl Render for SettingsView {
         );
 
         v_flex().size_full().child(TitleBar::new().child("Settings")).child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .child(Settings::new("settings").pages([appearance, downloads, ytdlp, updates, shortcuts])),
+            div().flex_1().min_h_0().child(
+                Settings::new("settings")
+                    .sidebar_width(cx.theme().font_size * 18.)
+                    .pages([appearance, downloads, ytdlp, updates, shortcuts]),
+            ),
         )
     }
 }
