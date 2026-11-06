@@ -1,5 +1,7 @@
 //! The menu bar icon on macOS and the notification-area icon on Windows and Linux.
 
+use std::{cell::RefCell, rc::Rc};
+
 use gpui_kit::{AnyWindowHandle, App, Entity, SystemNotification};
 use image::{Rgba, imageops::FilterType};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -24,8 +26,13 @@ pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
 
     // The list notifies on every change, including each progress tick.
     let (mut rows, mut shown) = (Vec::new(), Vec::new());
+    // Which download each row slot shows, so a click on `row-{i}` knows what to open.
+    let row_ids = Rc::new(RefCell::new(Vec::new()));
+    let ids = row_ids.clone();
     let mut sync = move |app: Entity<SyphrApp>, cx: &mut App| {
-        let labels = row_labels(app.read(cx).downloads());
+        let downloads = app.read(cx).downloads();
+        *ids.borrow_mut() = active(downloads).iter().take(MAX_ROWS).map(|d| d.id).collect();
+        let labels = row_labels(downloads);
         if labels != shown {
             sync_rows(&menu, &mut rows, &labels);
             shown = labels;
@@ -63,7 +70,13 @@ pub fn install(window: AnyWindowHandle, app: Entity<SyphrApp>, cx: &mut App) {
                     settings::open_settings_window(cx);
                 }
                 "quit" => cx.quit(),
-                // Show Syphr, a click on the icon, and the download rows.
+                row if let Some(download) =
+                    row.strip_prefix("row-").and_then(|i| row_ids.borrow().get(i.parse::<usize>().ok()?).copied()) =>
+                {
+                    cx.activate(true);
+                    app.update(cx, |this, cx| this.open_details(download, cx));
+                }
+                // Show Syphr, a click on the icon, and the "and N more" row.
                 _ => crate::show_main_window(cx),
             });
         }
@@ -93,19 +106,25 @@ fn open_downloads_folder(cx: &mut App) {
 
 /// One line per ongoing download, running ones first, or a single line saying there are none.
 fn row_labels(downloads: &[Download]) -> Vec<String> {
-    let mut active: Vec<&Download> = downloads
-        .iter()
-        .filter(|d| matches!(d.status, Status::Downloading | Status::Paused | Status::Queued))
-        .collect();
+    let active = active(downloads);
     if active.is_empty() {
         return vec![NO_DOWNLOADS.to_string()];
     }
-    active.sort_by_key(|d| d.status);
     let mut labels: Vec<String> = active.iter().take(MAX_ROWS).map(|d| row_label(d)).collect();
     if active.len() > MAX_ROWS {
         labels.push(format!("and {} more…", active.len() - MAX_ROWS));
     }
     labels
+}
+
+/// Ongoing downloads in the order the rows show them, running ones first.
+fn active(downloads: &[Download]) -> Vec<&Download> {
+    let mut active: Vec<&Download> = downloads
+        .iter()
+        .filter(|d| matches!(d.status, Status::Downloading | Status::Paused | Status::Queued))
+        .collect();
+    active.sort_by_key(|d| d.status);
+    active
 }
 
 fn row_label(d: &Download) -> String {
@@ -125,13 +144,13 @@ fn row_label(d: &Download) -> String {
     }
 }
 
-/// The rows sit at the top of the menu; clicking one brings the window back.
+/// The rows sit at the top of the menu; clicking one opens its details window.
 fn sync_rows(menu: &Menu, rows: &mut Vec<MenuItem>, labels: &[String]) {
     for (i, label) in labels.iter().enumerate() {
         match rows.get(i) {
             Some(row) => row.set_text(label),
             None => {
-                let row = MenuItem::new(label, true, None);
+                let row = MenuItem::with_id(format!("row-{i}"), label, true, None);
                 menu.insert(&row, i).ok();
                 rows.push(row);
             }

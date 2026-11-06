@@ -11,7 +11,8 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/engine/` | Download jobs. See [engine.md](engine.md) |
 | `src/tools.rs` | Finds and installs yt-dlp and ffmpeg. See [tools.md](tools.md) |
 | `src/ui/app/mod.rs` | `SyphrApp`: the list, selection, filters, and the `pump` that drives jobs |
-| `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, details pane, bulk bar |
+| `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, bulk bar |
+| `src/ui/app/details.rs` | The details window a double-clicked row opens, one per download |
 | `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/downloads_table.rs` | The downloads table (columns, sorting, row rendering) |
@@ -26,7 +27,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Running in the background
 
-Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one brings the window back. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
+Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one opens its details window. Closing a details window leaves the download running. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
 
 ## Adding a download
 
@@ -57,7 +58,7 @@ Until a column is resized, Name fills the table. After that, the Actions column 
    - `Downloading` with no free slot → back to `Queued`.
    - `Paused`/`Failed`/`Completed`/`Missing` with a running job → stop it.
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
-3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details pane draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
+3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details window draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
@@ -84,7 +85,7 @@ Closing the window quits, unless anything is downloading or queued; see the tray
 
 The list and a log per download live in SQLite at `downloads.db` in Syphr's folder (see Settings below), through `rusqlite` with SQLite built in. `SyphrApp::new` loads it, newest first, and continues ids from the highest one. Every `sync_table` calls `Store::sync`, which writes only rows whose saved fields changed (speed and part fractions aren't saved, so a running download rewrites just its byte count) and deletes removed rows with their log, in one transaction.
 
-The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The log button in the details pane shows it, newest first.
+The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The details window shows it, newest first, open by default.
 
 Downloads that were running or queued when Syphr quit start again on launch. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
 
