@@ -560,6 +560,7 @@ fn nav_row(label: impl Into<SharedString>, icon: Icon, wash: Option<(f32, Hsla)>
         .ml_2()
         .px_3()
         .gap_2p5()
+        .text_sm()
         .rounded(radius)
         .cursor_pointer()
         .children(wash.filter(|(share, _)| *share > 0.).map(|(share, color)| {
