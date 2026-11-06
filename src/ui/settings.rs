@@ -67,7 +67,8 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: SYSTEM_THEME.into(),
-            font_size: 13.,
+            // Linux desktops render UI text larger than macOS at the same scale.
+            font_size: if cfg!(target_os = "linux") { 15. } else { 13. },
             download_dir: home().join("Downloads").display().to_string(),
             max_concurrent: 3.,
             speed_limit_kbps: 0.,
