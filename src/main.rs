@@ -85,6 +85,16 @@ fn main() {
         }
         return;
     }
+    // GPUI's Linux renderer reads these at startup; its defaults leave small text soft. Users can still override.
+    #[cfg(target_os = "linux")]
+    for (key, value) in
+        [("ZED_FONTS_GRAYSCALE_ENHANCED_CONTRAST", "1.5"), ("ZED_FONTS_SUBPIXEL_ENHANCED_CONTRAST", "1.0")]
+    {
+        if std::env::var_os(key).is_none() {
+            // SAFETY: no other threads exist yet.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
     let app = gpui_kit::application().with_assets(AppAssets);
     app.on_reopen(show_main_window);
     app.run(|cx| {
