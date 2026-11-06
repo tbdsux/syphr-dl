@@ -1,16 +1,14 @@
-//! Everything `SyphrApp` draws: title bar, sidebar, toolbar, details pane, bulk bar and status bar.
+//! Everything `SyphrApp` draws: title bar, sidebar, toolbar, bulk bar and status bar.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, Size, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
-    chart::AreaChart,
     h_flex,
     input::Input,
     kbd::Kbd,
     popover::Popover,
-    progress::Progress,
     scroll::ScrollableElement as _,
     table::DataTable,
     v_flex,
@@ -18,11 +16,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::download::{Download, Kind, SPEED_SAMPLES, Status, format_bytes, format_duration};
-use crate::ui::downloads_table::{
-    DownloadsTable, eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text,
-    status_label,
-};
+use crate::download::{Kind, Status, format_bytes};
+use crate::ui::downloads_table::{DownloadsTable, kind_color, kind_icon};
 use crate::ui::settings::AppSettings;
 use crate::{
     ClearSelection, CloseWindow, CopyLinks, FocusSearch, NewDownload, OpenSettings, Remove, Retry, SelectAll,
@@ -300,170 +295,6 @@ impl SyphrApp {
             .child(Input::new(&self.search).small().prefix(IconName::Search).cleanable(true).ml_2().w(rems(17.)))
     }
 
-    fn render_detail(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, border, surface) = (theme.muted_foreground, theme.border, theme.secondary);
-        let (radius, mono) = (theme.radius, theme.mono_font_family.clone());
-        let (label, icon, next) = next_step(d.status);
-        let kind_tint = kind_color(d.kind, cx);
-        let id = d.id;
-        let url = d.url.clone();
-        let stat = |title: &'static str, value: AnyElement| {
-            v_flex().gap_0p5().min_w_0().child(div().text_xs().text_color(muted).child(title)).child(value)
-        };
-        let text = |s: String| div().truncate().font_weight(FontWeight::MEDIUM).child(s).into_any_element();
-
-        v_flex()
-            .p_4()
-            .gap_3()
-            .border_t_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size_9()
-                            .rounded(theme.radius)
-                            .bg(kind_tint.opacity(0.16))
-                            .child(kind_icon(d.kind).text_color(kind_tint)),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().truncate().font_weight(FontWeight::SEMIBOLD).child(d.name.clone()))
-                            .child(div().truncate().text_xs().text_color(muted).child(d.url.clone())),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("detail-step").small().outline().icon(icon).label(label).on_click(
-                                    cx.listener(move |this, _, window, cx| this.run_step(id, next, window, cx)),
-                                ),
-                            )
-                            .child(
-                                Button::new("detail-log")
-                                    .small()
-                                    .ghost()
-                                    .icon(Icon::new(Lucide::ScrollText))
-                                    .selected(self.show_log)
-                                    .tooltip(if self.show_log { "Hide log" } else { "Show log" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_log = !this.show_log;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("detail-copy")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Copy)
-                                    .tooltip("Copy link")
-                                    .on_click(move |_, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(url.to_string()))
-                                    }),
-                            )
-                            .child(
-                                Button::new("detail-close")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Close)
-                                    .tooltip("Close details")
-                                    .on_click(cx.listener(|this, _, _, cx| this.clear_checked(cx))),
-                            ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        Progress::new("detail-progress")
-                            .value(d.progress())
-                            .color(progress_color(d.status, cx))
-                            .accessibility_label(format!("{} progress", d.name))
-                            .flex_1(),
-                    )
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{:.1}%", d.progress()))),
-            )
-            .when(!d.fragments.is_empty(), |this| {
-                this.child(
-                    v_flex()
-                        .gap_1()
-                        .child(div().text_xs().text_color(muted).child(format!("{} connections", d.fragments.len())))
-                        .child(fragment_strip(d, rems(0.5), cx)),
-                )
-            })
-            .when(!d.speed_history.is_empty(), |this| {
-                let color = progress_color(d.status, cx);
-                let newest = d.speed_history.len() - 1;
-                this.child(
-                    div().h(rems(5.)).child(
-                        AreaChart::new(d.speed_history.iter().map(|&speed| speed as f64).enumerate())
-                            .x(|(i, _)| i.to_string())
-                            .y(|(_, speed)| *speed)
-                            .name("Speed")
-                            .linear()
-                            .stroke(color)
-                            .fill(color.opacity(0.2))
-                            .point_count(SPEED_SAMPLES)
-                            .x_axis(false)
-                            .y_axis(true)
-                            .y_tick_count(2)
-                            .y_tick_format(|speed| format!("{}/s", format_bytes(speed as u64)))
-                            .tooltip_title(move |(i, _)| {
-                                format!("{} ago", format_duration(((newest - i) / 2) as u64)).into()
-                            })
-                            .tooltip_value(|_, _, speed| format!("{}/s", format_bytes(speed as u64)).into())
-                            .appear(false),
-                    ),
-                )
-            })
-            .child(
-                div()
-                    .grid()
-                    .grid_cols(6)
-                    .gap_4()
-                    .child(stat("Status", status_label(d.status, cx).into_any_element()))
-                    .child(stat("Downloaded", text(size_text(d))))
-                    .child(stat("Speed", text(speed_text(d))))
-                    .child(stat("Time left", text(eta_text(d))))
-                    .child(stat(
-                        "Format",
-                        text(d.format.as_ref().map(|f| f.to_string()).unwrap_or_else(|| "Original file".into())),
-                    ))
-                    .child(stat("Save to", text(d.folder.to_string()))),
-            )
-            .when(self.show_log, |this| {
-                let lines = self.store.log_for(id).unwrap_or_default();
-                // Newest first, so a running download's latest line is in view without scrolling.
-                this.child(
-                    v_flex()
-                        .max_h(rems(10.))
-                        .overflow_y_scrollbar()
-                        .gap_0p5()
-                        .p_2()
-                        .rounded(radius)
-                        .bg(surface)
-                        .font_family(mono)
-                        .text_xs()
-                        .when(lines.is_empty(), |this| this.text_color(muted).child("Nothing logged yet"))
-                        .children(lines.into_iter().rev().map(|(at, message)| {
-                            h_flex()
-                                .gap_3()
-                                .items_start()
-                                .child(div().flex_none().text_color(muted).child(at))
-                                .child(div().flex_1().min_w_0().child(message))
-                        })),
-                )
-            })
-    }
-
     fn render_bulk_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let pausable = self.checked_with(&[Status::Downloading, Status::Queued]);
@@ -602,7 +433,6 @@ impl RenderOnce for PanelAnchor {
 
 impl Render for SyphrApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let detail = self.selected_download().cloned();
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -642,7 +472,6 @@ impl Render for SyphrApp {
                         .bg(cx.theme().background)
                         .overflow_hidden()
                         .child(self.render_toolbar(cx))
-                        .when_some(detail, |this, d| this.child(self.render_detail(&d, cx)))
                         .when(self.checked.len() > 1, |this| this.child(self.render_bulk_bar(cx)))
                         .child({
                             let table = self.table.clone();

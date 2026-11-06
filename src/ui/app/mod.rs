@@ -20,6 +20,7 @@ use crate::ui::add_download::{AddDownload, AddEvent, kind_for};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
 
+mod details;
 mod selection;
 mod views;
 
@@ -63,7 +64,7 @@ impl Filter {
 pub struct SyphrApp {
     downloads: Vec<Download>,
     filter: Filter,
-    /// Selected downloads by id; the details card shows when exactly one is selected.
+    /// Selected downloads by id.
     checked: BTreeSet<u64>,
     /// Where a Shift-click range starts.
     anchor: Option<u64>,
@@ -79,8 +80,8 @@ pub struct SyphrApp {
     /// Engine state per download id; kept while paused so a resume continues.
     jobs: HashMap<u64, Job>,
     store: Store,
-    /// Whether the details card shows the download's log.
-    show_log: bool,
+    /// Open details windows by download id.
+    details: HashMap<u64, AnyWindowHandle>,
     _pump: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -110,6 +111,11 @@ impl SyphrApp {
                         let ids: Vec<u64> = table.read(cx).delegate().rows.iter().map(|d| d.id).collect();
                         let modifiers = window.modifiers();
                         this.select_row(&ids, *ix, modifiers.shift, modifiers.secondary(cx), cx);
+                    }
+                    TableEvent::DoubleClickedRow(ix) => {
+                        if let Some(id) = table.read(cx).delegate().rows.get(*ix).map(|d| d.id) {
+                            this.open_details(id, cx);
+                        }
                     }
                     // Sent once the drag ends; Name then gives up or takes back the difference.
                     TableEvent::ColumnWidthsChanged(widths) => {
@@ -156,7 +162,7 @@ impl SyphrApp {
             next_id: store.next_id(),
             downloads,
             store,
-            show_log: false,
+            details: HashMap::new(),
             jobs: HashMap::new(),
             _pump: pump,
             filter: Filter::All,
@@ -265,13 +271,6 @@ impl SyphrApp {
         self.checked.clear();
         self.anchor = None;
         self.sync_table(cx);
-    }
-
-    fn selected_download(&self) -> Option<&Download> {
-        match self.checked.len() {
-            1 => self.downloads.iter().find(|d| self.checked.contains(&d.id)),
-            _ => None,
-        }
     }
 
     fn checked_with(&self, statuses: &[Status]) -> usize {
