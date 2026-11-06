@@ -27,7 +27,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Running in the background
 
-Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one brings the window back. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
+Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one opens its details window. Closing a details window leaves the download running. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
 
 ## Adding a download
 
