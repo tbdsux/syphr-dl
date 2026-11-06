@@ -21,7 +21,7 @@ use crate::ui::downloads_table::{
 
 impl SyphrApp {
     /// One window per download; a second double-click brings the open one forward.
-    pub(super) fn open_details(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub fn open_details(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(handle) = self.details.get(&id)
             && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
         {
