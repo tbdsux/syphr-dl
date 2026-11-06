@@ -45,6 +45,11 @@ pub struct AppSettings {
     pub ytdlp_path: String,
     /// yt-dlp needs it to merge separate video and audio streams.
     pub ffmpeg_path: String,
+    /// Video codec picked first at each resolution; see `ytdlp::Options`.
+    pub ytdlp_codec: String,
+    pub ytdlp_container: String,
+    /// Extra yt-dlp arguments as typed, split like a shell line.
+    pub ytdlp_args: String,
     pub notify_on_complete: bool,
     /// Opening the link field fills it with a copied link.
     pub auto_paste: bool,
@@ -74,6 +79,9 @@ impl Default for AppSettings {
             proxy_password: String::new(),
             ytdlp_path: "yt-dlp".into(),
             ffmpeg_path: "ffmpeg".into(),
+            ytdlp_codec: "any".into(),
+            ytdlp_container: "auto".into(),
+            ytdlp_args: String::new(),
             notify_on_complete: true,
             auto_paste: true,
             show_quick_download: true,
@@ -144,6 +152,14 @@ impl AppSettings {
             url.set_password(Some(&self.proxy_password)).map_err(|_| invalid())?;
         }
         Ok(url.to_string())
+    }
+
+    pub fn ytdlp_options(&self) -> crate::engine::ytdlp::Options {
+        crate::engine::ytdlp::Options {
+            codec: self.ytdlp_codec.clone(),
+            container: self.ytdlp_container.clone(),
+            extra_args: crate::engine::ytdlp::split_args(&self.ytdlp_args),
+        }
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -317,6 +333,11 @@ fn tool_path_field(
 fn update_proxy(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
     AppSettings::update(cx, edit);
     crate::engine::set_proxy(AppSettings::get(cx).proxy_url());
+}
+
+fn update_ytdlp(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
+    AppSettings::update(cx, edit);
+    crate::engine::ytdlp::set_options(AppSettings::get(cx).ytdlp_options());
 }
 
 /// `SettingField::input` can't mask its text.
@@ -637,6 +658,63 @@ impl Render for SettingsView {
                 )
                 .description("Syphr can download its own copies of both. Your own installs are used first."),
             ]),
+        )
+        .group(
+            SettingGroup::new()
+                .title("Formats")
+                .description("Applies to links looked up from now on.")
+                .items([
+                    SettingItem::new(
+                        "Preferred video codec",
+                        SettingField::dropdown(
+                            vec![
+                                ("any".into(), "No preference".into()),
+                                ("h264".into(), "H.264 (plays everywhere)".into()),
+                                ("vp9".into(), "VP9".into()),
+                                ("av1".into(), "AV1 (smallest files)".into()),
+                            ],
+                            |cx: &App| AppSettings::get(cx).ytdlp_codec.clone().into(),
+                            |value: SharedString, cx: &mut App| update_ytdlp(cx, |s| s.ytdlp_codec = value.to_string()),
+                        )
+                        .default_value(defaults.ytdlp_codec.clone()),
+                    )
+                    .description(
+                        "Picked first at each resolution when the site offers it. YouTube has H.264 only up to 1080p, \
+                         so higher resolutions still come in VP9 or AV1.",
+                    ),
+                    SettingItem::new(
+                        "Video file type",
+                        SettingField::dropdown(
+                            vec![
+                                ("auto".into(), "Automatic".into()),
+                                ("mp4".into(), "MP4".into()),
+                                ("mkv".into(), "MKV".into()),
+                            ],
+                            |cx: &App| AppSettings::get(cx).ytdlp_container.clone().into(),
+                            |value: SharedString, cx: &mut App| {
+                                update_ytdlp(cx, |s| s.ytdlp_container = value.to_string())
+                            },
+                        )
+                        .default_value(defaults.ytdlp_container.clone()),
+                    )
+                    .description(
+                        "Automatic keeps the site's format, such as WebM. Others repackage the file with ffmpeg without \
+                         re-encoding. Some players can't open VP9 or AV1 inside MP4.",
+                    ),
+                    SettingItem::new(
+                        "Extra yt-dlp options",
+                        SettingField::input(
+                            |cx: &App| AppSettings::get(cx).ytdlp_args.clone().into(),
+                            |value: SharedString, cx: &mut App| update_ytdlp(cx, |s| s.ytdlp_args = value.to_string()),
+                        )
+                        .default_value(defaults.ytdlp_args.clone()),
+                    )
+                    .layout(Axis::Vertical)
+                    .description(
+                        "Added to every lookup and download, as in --embed-metadata --cookies-from-browser chrome. \
+                         Quote values with spaces. Syphr's own options win where they clash.",
+                    ),
+                ]),
         );
 
         let updates = SettingPage::new("Updates")

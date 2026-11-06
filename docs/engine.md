@@ -95,11 +95,13 @@ When every part is done the file is synced, then `.part` is moved to the final n
 
 `probe(bin, url)` runs `yt-dlp -J --no-playlist` and `parse` reduces the format list to a few choices:
 
-- **One per resolution**, highest first: the best video stream at that height (higher fps, then bigger size).
+- **One per resolution**, highest first: the best video stream at that height (the preferred codec from Settings, then higher fps, then bigger size).
 - Video without audio is paired with the best audio in a compatible container (mp4+m4a, webm+webm), otherwise the best audio overall, merged into mkv.
 - Selectors use exact format ids (`137+140/b[height=1080]`), so the file matches the label; the `/b[height=…]` fallback covers formats that vanish between lookup and download.
 - **Best quality** copies the top resolution. **Audio only** is the highest-bitrate audio stream.
 - Each choice shows its container and estimated size (`MP4 · ~48.2 MB`).
+
+`ytdlp::Options` holds Settings → *YouTube & sites → Formats*: preferred codec, video file type and extra arguments. `set_options` stores them at launch and on every change, the way `set_proxy` does, so they apply to lookups and downloads started afterwards.
 
 ### Running
 
@@ -110,6 +112,8 @@ When every part is done the file is synced, then `.part` is moved to the final n
    - `-f <selector> -N <fragments> --no-playlist`
    - `-r <limit>` when a speed limit is set
    - `--ffmpeg-location` when ffmpeg is a full path
+   - `--merge-output-format <type> --remux-video <type>` when a video file type is chosen (not for *Audio only*)
+   - the user's extra arguments first, so Syphr's own flags win where they clash
    - a progress template that prints `downloaded total` per line, and `--print after_move:filepath` for the final path
    - output into the staging folder `<data folder>/partial/<download id>/` as `<typed name or title>.<ext>`
 3. Reads progress from stdout. Video and audio download one after the other, each counting from zero, so a drop in the counter starts a new base. The last stderr line is kept as the error message.

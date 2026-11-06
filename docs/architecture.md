@@ -102,6 +102,9 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 | Connections | 8 | Byte-range parts for direct links, `-N` for yt-dlp |
 | Proxy | None | Type, host, port, username, password for all traffic; the password is stored as plain text. See [engine.md](engine.md#proxy) |
 | yt-dlp / ffmpeg path | `yt-dlp` / `ffmpeg` | Bare names are searched; see [tools.md](tools.md) |
+| Preferred video codec | No preference | H.264, VP9 or AV1 is picked first at each resolution |
+| Video file type | Automatic | MP4 or MKV repackages video downloads with ffmpeg |
+| Extra yt-dlp options | | Split like a shell line, added before Syphr's own arguments |
 | Notify on complete | on | |
 | Auto paste | on | |
 | Shortcuts | | Per-action overrides; empty turns one off |

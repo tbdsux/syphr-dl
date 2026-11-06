@@ -7,7 +7,7 @@ use std::{
     io::ErrorKind,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::atomic::Ordering::Relaxed,
+    sync::{LazyLock, RwLock, atomic::Ordering::Relaxed},
 };
 
 use gpui_kit::SharedString;
@@ -24,6 +24,69 @@ const HOSTS: [&str; 7] =
 pub fn handles(url: &str) -> bool {
     let host = url.split('/').nth(2).unwrap_or_default().to_lowercase();
     HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")))
+}
+
+/// The user's yt-dlp settings, applied to lookups and downloads started from now on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Options {
+    /// `h264`, `vp9`, `av1`, or anything else for no preference.
+    pub codec: String,
+    /// `mp4` or `mkv` for every video download, or anything else for yt-dlp's choice.
+    pub container: String,
+    /// Passed before Syphr's own arguments, so those win where they clash.
+    pub extra_args: Vec<String>,
+}
+
+static OPTIONS: LazyLock<RwLock<Options>> = LazyLock::new(Default::default);
+
+pub fn set_options(options: Options) {
+    *OPTIONS.write().unwrap() = options;
+}
+
+fn options() -> Options {
+    OPTIONS.read().unwrap().clone()
+}
+
+impl Options {
+    fn container(&self) -> Option<&str> {
+        matches!(self.container.as_str(), "mp4" | "mkv").then_some(self.container.as_str())
+    }
+
+    fn prefers(&self, vcodec: Option<&str>) -> bool {
+        let c = vcodec.unwrap_or_default();
+        match self.codec.as_str() {
+            "h264" => c.starts_with("avc") || c.starts_with("h264"),
+            "vp9" => c.starts_with("vp9") || c.starts_with("vp09"),
+            "av1" => c.starts_with("av01"),
+            _ => false,
+        }
+    }
+}
+
+/// Splits like a shell would for plain words and quotes; no escapes or variables.
+pub fn split_args(text: &str) -> Vec<String> {
+    let (mut args, mut cur, mut quote, mut started) = (Vec::new(), String::new(), None, false);
+    for c in text.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => (quote, started) = (Some(c), true),
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(cur);
+    }
+    args
 }
 
 #[derive(Clone, Debug)]
@@ -80,7 +143,9 @@ impl RawFormat {
 
 /// Blocking: run it on a background executor.
 pub fn probe(bin: &str, url: &str) -> Result<VideoInfo, String> {
+    let options = options();
     let mut cmd = Command::new(bin);
+    cmd.args(&options.extra_args);
     if let Some(proxy) = proxy()? {
         cmd.arg("--proxy").arg(proxy);
     }
@@ -95,10 +160,10 @@ pub fn probe(bin: &str, url: &str) -> Result<VideoInfo, String> {
         let reason = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
         return Err(reason.trim_start_matches("ERROR: ").to_string());
     }
-    parse(&String::from_utf8_lossy(&output.stdout))
+    parse(&String::from_utf8_lossy(&output.stdout), &options)
 }
 
-pub fn parse(json: &str) -> Result<VideoInfo, String> {
+pub fn parse(json: &str, prefs: &Options) -> Result<VideoInfo, String> {
     let raw: RawInfo =
         serde_json::from_str(json).map_err(|err| format!("yt-dlp returned data Syphr can't read: {err}"))?;
 
@@ -109,9 +174,8 @@ pub fn parse(json: &str) -> Result<VideoInfo, String> {
     let mut by_height: BTreeMap<u32, &RawFormat> = BTreeMap::new();
     for f in raw.formats.iter().filter(|f| f.has_video()) {
         let height = f.height.unwrap_or_default();
-        let better = by_height.get(&height).is_none_or(|cur| {
-            (f.fps.unwrap_or(0.), f.size().unwrap_or(0)) > (cur.fps.unwrap_or(0.), cur.size().unwrap_or(0))
-        });
+        let rank = |f: &RawFormat| (prefs.prefers(f.vcodec.as_deref()), f.fps.unwrap_or(0.), f.size().unwrap_or(0));
+        let better = by_height.get(&height).is_none_or(|cur| rank(f) > rank(cur));
         if better {
             by_height.insert(height, f);
         }
@@ -136,6 +200,7 @@ pub fn parse(json: &str) -> Result<VideoInfo, String> {
             Some(a) => (format!("{}+{}", f.format_id, a.format_id), merged_ext(&f.ext, &a.ext)),
             None => (f.format_id.clone(), f.ext.as_str()),
         };
+        let ext = prefs.container().unwrap_or(ext);
         options.push(FormatOption {
             label: format!("{height}p{fps}").into(),
             detail: describe(ext, size),
@@ -213,28 +278,34 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
         Some(name) => format!("{}.%(ext)s", name.replace('%', "%%")),
         None => "%(title)s.%(ext)s".into(),
     };
+    let options = options();
     let mut cmd = tokio::process::Command::new(&request.ytdlp_bin);
-    cmd.args([
-        "-f",
-        selector,
-        "-N",
-        &request.fragments.max(1).to_string(),
-        "--no-playlist",
-        "--newline",
-        "--progress",
-        "--no-warnings",
-        // `--print` implies quiet; keep yt-dlp's "[extractor] ..." lines for the log.
-        "--no-quiet",
-    ])
-    .args([
-        "--progress-template",
-        "download:%(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s",
-    ])
-    .args(["--print", "after_move:filepath", "-o", &template, "-P"])
-    .arg(&staging);
+    cmd.args(&options.extra_args)
+        .args([
+            "-f",
+            selector,
+            "-N",
+            &request.fragments.max(1).to_string(),
+            "--no-playlist",
+            "--newline",
+            "--progress",
+            "--no-warnings",
+            // `--print` implies quiet; keep yt-dlp's "[extractor] ..." lines for the log.
+            "--no-quiet",
+        ])
+        .args([
+            "--progress-template",
+            "download:%(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s",
+        ])
+        .args(["--print", "after_move:filepath", "-o", &template, "-P"])
+        .arg(&staging);
     // A bare command name is found on PATH by yt-dlp itself.
     if request.ffmpeg_bin.contains(std::path::is_separator) {
         cmd.arg("--ffmpeg-location").arg(&request.ffmpeg_bin);
+    }
+    // Audio-only selectors start with `ba`; remuxing would turn them into video containers.
+    if let Some(container) = options.container().filter(|_| !selector.starts_with("ba")) {
+        cmd.args(["--merge-output-format", container, "--remux-video", container]);
     }
     if request.limit_bps > 0 {
         cmd.arg("-r").arg(request.limit_bps.to_string());
@@ -329,7 +400,7 @@ mod tests {
 
     #[test]
     fn builds_choices_from_formats() {
-        let info = parse(SAMPLE).unwrap();
+        let info = parse(SAMPLE, &Options::default()).unwrap();
         assert_eq!(info.title, "Rust in 100 Seconds");
         assert_eq!(info.duration_secs, Some(151));
         let labels: Vec<_> = info.options.iter().map(|o| o.label.to_string()).collect();
@@ -347,9 +418,29 @@ mod tests {
     }
 
     #[test]
+    fn follows_codec_and_container() {
+        let options = Options { codec: "vp9".into(), container: "mkv".into(), ..Default::default() };
+        let info = parse(SAMPLE, &options).unwrap();
+        // VP9 wins at 1080p over the 60 fps H.264 stream, and pairs with the webm audio.
+        assert_eq!(info.options[1].label, "1080p");
+        assert_eq!(info.options[1].selector, "248+251/b[height=1080]");
+        assert!(info.options[1].detail.starts_with("MKV"));
+        assert!(info.options.last().unwrap().detail.starts_with("M4A"));
+    }
+
+    #[test]
+    fn splits_extra_args() {
+        assert_eq!(
+            split_args(r#" --embed-metadata  --cookies-from-browser "chrome:Profile 1" -o '' "#),
+            ["--embed-metadata", "--cookies-from-browser", "chrome:Profile 1", "-o", ""]
+        );
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
     fn rejects_bad_output() {
-        assert!(parse("not json").is_err());
-        assert!(parse(r#"{"title": "x", "formats": []}"#).is_err());
+        assert!(parse("not json", &Options::default()).is_err());
+        assert!(parse(r#"{"title": "x", "formats": []}"#, &Options::default()).is_err());
     }
 
     #[test]
