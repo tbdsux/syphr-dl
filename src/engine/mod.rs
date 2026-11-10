@@ -793,6 +793,8 @@ mod offline {
         job.start(request.clone());
         std::thread::sleep(Duration::from_millis(1500));
         job.stop();
+        // The abort lands at the task's next await, so a chunk already read may still be counted.
+        std::thread::sleep(Duration::from_millis(300));
         let paused = job.received();
         assert!(paused > 0 && paused < total, "{paused}");
 
