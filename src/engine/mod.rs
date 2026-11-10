@@ -536,6 +536,26 @@ mod offline {
         assert_eq!(job.received(), total);
         assert!(job.fragments().iter().all(|(_, done)| *done == 1.));
     }
+
+    #[test]
+    fn resumes_from_a_new_address() {
+        let total = 6 * 1024 * 1024;
+        let old = serve(total, Some(0)).url;
+        let mut job = Job::default();
+        let request = Request { fragments: 1, ..request(u64::MAX - 11, &old) };
+        job.start(request.clone());
+        std::thread::sleep(Duration::from_millis(1500));
+        job.stop();
+        let paused = job.received();
+        assert!(paused > 0 && paused < total, "{paused}");
+
+        let direct::server::Served { url: new, seen, .. } = serve(total, None);
+        job.start(Request { url: new, ..request });
+        let path = finish(&mut job).unwrap();
+        assert_content(&path, total);
+        let first = seen.lock().unwrap().iter().map(|h| h.to_lowercase()).find(|h| !h.contains("bytes=0-0")).unwrap();
+        assert!(first.contains(&format!("range: bytes={paused}-")), "{first}");
+    }
 }
 
 #[cfg(test)]
@@ -616,6 +636,43 @@ mod live {
         };
         assert_eq!(fs::metadata(&path).unwrap().len(), 10 * 1024 * 1024);
         assert_eq!(job.received(), 10 * 1024 * 1024);
+    }
+
+    #[test]
+    #[ignore = "network"]
+    fn resumes_from_a_refreshed_address() {
+        let request = Request {
+            id: u64::MAX - 4,
+            url: "https://proof.ovh.net/files/10Mb.dat".into(),
+            folder: std::env::temp_dir().join(format!("syphr-refresh-{}", std::process::id())),
+            file_name: None,
+            selector: None,
+            ytdlp_bin: String::new(),
+            ffmpeg_bin: String::new(),
+            limit_bps: 2 * 1024 * 1024,
+            fragments: 4,
+        };
+        let mut job = Job::default();
+        job.start(request.clone());
+        std::thread::sleep(Duration::from_millis(2000));
+        job.stop();
+        let paused = job.received();
+        assert!(paused > 0 && paused < 10 * 1024 * 1024, "{paused}");
+        job.take_log();
+        // Another address for the same file.
+        let url = "https://proof.ovh.net/files/10Mb.dat?refreshed=1".to_string();
+        let info = RUNTIME.block_on(inspect(&url)).unwrap();
+        assert_eq!((info.total, info.ranged), (Some(10 * 1024 * 1024), true));
+        job.start(Request { url, limit_bps: 0, ..request });
+        let path = loop {
+            std::thread::sleep(Duration::from_millis(200));
+            if let Some(result) = job.take_result() {
+                break result.unwrap();
+            }
+        };
+        assert_eq!(fs::metadata(&path).unwrap().len(), 10 * 1024 * 1024);
+        let log = job.take_log();
+        assert!(!log.iter().any(|l| l.contains("GET (Range: bytes=0-")), "part 1 restarted: {log:?}");
     }
 
     #[test]

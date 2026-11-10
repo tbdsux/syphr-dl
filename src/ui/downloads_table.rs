@@ -511,6 +511,7 @@ impl TableDelegate for DownloadsTable {
                 let (label, icon, next) = next_step(d.status);
                 let (app, app2) = (self.app.clone(), self.app.clone());
                 let (url, saved) = (d.url.clone(), d.path.is_some());
+                let refreshable = d.source == Source::Direct && matches!(d.status, Status::Paused | Status::Failed);
                 // Right-aligned: this column takes the table's slack once a column is resized.
                 h_flex()
                     .w_full()
@@ -533,6 +534,16 @@ impl TableDelegate for DownloadsTable {
                                 menu.item(PopupMenuItem::new("Copy link").icon(IconName::Copy).on_click(
                                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.to_string())),
                                 ))
+                                .when(refreshable, |menu| {
+                                    let app = app.clone();
+                                    menu.item(
+                                        PopupMenuItem::new("Refresh address…").icon(IconName::RefreshCw).on_click(
+                                            move |_, _, cx| {
+                                                app.update(cx, |this, cx| this.open_refresh_address(id, cx)).ok();
+                                            },
+                                        ),
+                                    )
+                                })
                                 .separator()
                                 .item(PopupMenuItem::new("Remove from list").icon(IconName::Delete).on_click({
                                     let app = app.clone();

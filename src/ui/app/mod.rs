@@ -81,7 +81,7 @@ pub struct SyphrApp {
     jobs: HashMap<u64, Job>,
     store: Store,
     /// Open details windows by download id.
-    details: HashMap<u64, AnyWindowHandle>,
+    details: HashMap<u64, (AnyWindowHandle, WeakEntity<details::DownloadDetails>)>,
     _pump: Task<()>,
     _subscriptions: Vec<Subscription>,
 }

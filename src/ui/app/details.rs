@@ -1,7 +1,7 @@
 //! The details window for one download, opened by double-clicking its row.
 
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable, TitleBar,
+    ActiveTheme, Disableable, IconName, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
     chart::AreaChart,
     form::{Field, Form},
@@ -16,7 +16,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SyphrApp;
-use crate::download::{Download, SPEED_SAMPLES, format_bytes, format_duration};
+use crate::download::{Download, SPEED_SAMPLES, Source, Status, format_bytes, format_duration};
+use crate::engine;
 use crate::ui::downloads_table::{
     eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text, status_label,
 };
@@ -25,9 +26,25 @@ use crate::ui::settings::AppSettings;
 impl SyphrApp {
     /// One window per download; a second double-click brings the open one forward.
     pub fn open_details(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(handle) = self.details.get(&id)
+        self.open_details_on(id, LOG_TAB, cx);
+    }
+
+    /// Opens the details window on its Options tab, where the address can be replaced.
+    pub fn open_refresh_address(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.open_details_on(id, OPTIONS_TAB, cx);
+    }
+
+    fn open_details_on(&mut self, id: u64, tab: usize, cx: &mut Context<Self>) {
+        if let Some((handle, view)) = self.details.get(&id)
             && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
         {
+            if tab != LOG_TAB {
+                view.update(cx, |view, cx| {
+                    view.tab = tab;
+                    cx.notify();
+                })
+                .ok();
+            }
             return;
         }
         let app = cx.entity();
@@ -39,10 +56,10 @@ impl SyphrApp {
                 ..TitleBar::window_options()
             };
             let view = app.clone();
-            if let Ok((handle, _)) =
-                gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| DownloadDetails::new(view, id, window, cx)))
-            {
-                app.update(cx, |this, _| this.details.insert(id, handle));
+            if let Ok((handle, view)) = gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| DownloadDetails::new(view, id, tab, window, cx))
+            }) {
+                app.update(cx, |this, _| this.details.insert(id, (handle, view.downgrade())));
             }
         });
     }
@@ -54,26 +71,67 @@ impl SyphrApp {
             self.sync_table(cx);
         }
     }
+
+    /// Points a paused or failed direct download at a new link for the same file, so it resumes from its parts.
+    /// The link must serve the same size with byte ranges; otherwise nothing changes and the window says why.
+    pub fn refresh_address(&mut self, id: u64, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
+        let (total, probe) = (d.total_bytes, url.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let info = match engine::RUNTIME.spawn(async move { engine::inspect(&probe).await }).await {
+                Ok(result) => result,
+                Err(e) => Err(e.to_string()),
+            };
+            let outcome = match info {
+                Err(e) => Err(format!("Couldn't check the new address: {e}")),
+                Ok(info) if !info.ranged => {
+                    Err("The new address doesn't support resuming, so the download can't continue from it.".into())
+                }
+                Ok(info) if total.is_some() && info.total != total => Err(format!(
+                    "The new address serves a different file ({} instead of {}).",
+                    info.total.map(format_bytes).unwrap_or_else(|| "unknown size".into()),
+                    total.map(format_bytes).unwrap_or_default(),
+                )),
+                Ok(info) => Ok(info.summary),
+            };
+            this.update_in(cx, |this, window, cx| match outcome {
+                Ok(summary) => {
+                    this.store.log(id, &format!("Address changed to {url} {summary}"));
+                    this.edit_download(id, |d| d.url = url.into(), cx);
+                    window.push_notification("Address updated. Resume to continue the download.", cx);
+                }
+                Err(message) => window.push_notification(message, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
 
 const LOG_TAB: usize = 0;
+const OPTIONS_TAB: usize = 1;
 
 pub struct DownloadDetails {
     app: WeakEntity<SyphrApp>,
     id: u64,
     tab: usize,
+    /// A replacement link; see `SyphrApp::refresh_address`.
+    address: Entity<InputState>,
     /// KB/s; empty uses Settings' limit.
     limit: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl DownloadDetails {
-    fn new(app: Entity<SyphrApp>, id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(app: Entity<SyphrApp>, id: u64, tab: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let d = app.read(cx).downloads.iter().find(|d| d.id == id).cloned();
+        let url = d.as_ref().map(|d| d.url.clone()).unwrap_or_default();
+        let address = cx.new(|cx| InputState::new(window, cx).default_value(url));
         let limit = d.as_ref().and_then(|d| d.limit_kbps).map(|l| l.to_string()).unwrap_or_default();
         let limit = cx.new(|cx| InputState::new(window, cx).placeholder("Default").default_value(limit));
         let subscriptions = vec![
             cx.observe(&app, |_, _, cx| cx.notify()),
+            cx.observe(&address, |_, _, cx| cx.notify()),
             cx.subscribe(&limit, |this, input, event: &InputEvent, cx| {
                 if let (InputEvent::Change, Some(limit)) = (event, parse_limit(&input.read(cx).value())) {
                     let id = this.id;
@@ -81,7 +139,7 @@ impl DownloadDetails {
                 }
             }),
         ];
-        Self { app: app.downgrade(), id, tab: LOG_TAB, limit, _subscriptions: subscriptions }
+        Self { app: app.downgrade(), id, tab, address, limit, _subscriptions: subscriptions }
     }
 }
 
@@ -287,7 +345,10 @@ impl DownloadDetails {
             })
     }
 
-    fn render_options(&self, _d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_options(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
+        let address = self.address.read(cx).value().trim().to_string();
+        let can_refresh = d.source == Source::Direct && matches!(d.status, Status::Paused | Status::Failed);
+        let (app, id) = (self.app.clone(), self.id);
         let default = match AppSettings::get(cx).speed_limit_kbps as u64 {
             0 => "no limit".to_string(),
             kbps => format!("{kbps} KB/s"),
@@ -296,8 +357,38 @@ impl DownloadDetails {
             Some(_) => format!("Empty uses the default from Settings ({default}). 0 means no limit."),
             None => "Enter a whole number of KB/s.".into(),
         };
-        v_flex().flex_1().min_h(rems(6.)).overflow_y_scrollbar().child(Form::new().child(
-            Field::new().label("Speed limit (KB/s)").description(limit_help).child(Input::new(&self.limit).small()),
-        ))
+        v_flex().flex_1().min_h(rems(6.)).overflow_y_scrollbar().child(
+            Form::new()
+                .when(d.source == Source::Direct, |this| {
+                    this.child(
+                        Field::new()
+                            .label("Address")
+                            .description(if can_refresh {
+                                "Paste a fresh link to the same file, such as a new expiring link, then refresh."
+                            } else {
+                                "Pause the download to change its address."
+                            })
+                            .child(
+                                h_flex().gap_2().child(Input::new(&self.address).small().flex_1()).child(
+                                    Button::new("refresh-address")
+                                        .small()
+                                        .outline()
+                                        .label("Refresh")
+                                        .disabled(!can_refresh || address.is_empty() || address == *d.url)
+                                        .on_click(move |_, window, cx| {
+                                            let url = address.clone();
+                                            app.update(cx, |this, cx| this.refresh_address(id, url, window, cx)).ok();
+                                        }),
+                                ),
+                            ),
+                    )
+                })
+                .child(
+                    Field::new()
+                        .label("Speed limit (KB/s)")
+                        .description(limit_help)
+                        .child(Input::new(&self.limit).small()),
+                ),
+        )
     }
 }
