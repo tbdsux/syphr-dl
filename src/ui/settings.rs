@@ -32,8 +32,10 @@ pub struct AppSettings {
     pub font_size: f64,
     pub download_dir: String,
     pub max_concurrent: f64,
-    /// 0 means unlimited.
+    /// Each download's limit unless it sets its own; 0 means unlimited.
     pub speed_limit_kbps: f64,
+    /// All downloads together; 0 means unlimited.
+    pub total_limit_kbps: f64,
     /// Parallel connections per download: byte-range parts for direct links, `-N` for yt-dlp.
     pub fragments: f64,
     /// URL scheme of the proxy for all of Syphr's traffic, or `PROXY_NONE`.
@@ -72,6 +74,7 @@ impl Default for AppSettings {
             download_dir: home().join("Downloads").display().to_string(),
             max_concurrent: 3.,
             speed_limit_kbps: 0.,
+            total_limit_kbps: 0.,
             fragments: 8.,
             proxy_type: PROXY_NONE.into(),
             proxy_host: String::new(),
@@ -483,7 +486,17 @@ impl Render for SettingsView {
                 )
                 .description("Others wait in the queue."),
                 SettingItem::new(
-                    "Speed limit (KB/s)",
+                    "Total speed limit (KB/s)",
+                    SettingField::number_input(
+                        number(0., 1_000_000., 100.),
+                        |cx: &App| AppSettings::get(cx).total_limit_kbps,
+                        |value: f64, cx: &mut App| AppSettings::update(cx, |s| s.total_limit_kbps = value),
+                    )
+                    .default_value(defaults.total_limit_kbps),
+                )
+                .description("Shared by all running downloads. 0 means no limit."),
+                SettingItem::new(
+                    "Speed limit per download (KB/s)",
                     SettingField::number_input(
                         number(0., 1_000_000., 100.),
                         |cx: &App| AppSettings::get(cx).speed_limit_kbps,
@@ -491,7 +504,7 @@ impl Render for SettingsView {
                     )
                     .default_value(defaults.speed_limit_kbps),
                 )
-                .description("Shared by all downloads. 0 means no limit."),
+                .description("For each download that doesn't set its own in its details window. 0 means no limit."),
                 SettingItem::new(
                     "Connections per download",
                     SettingField::number_input(

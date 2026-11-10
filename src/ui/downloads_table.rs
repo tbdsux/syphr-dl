@@ -584,6 +584,7 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            limit_kbps: None,
         }
     }
 

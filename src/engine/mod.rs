@@ -58,6 +58,56 @@ pub(crate) fn proxy() -> Result<Option<String>, String> {
         .map_err(Clone::clone)
 }
 
+/// Caps bytes per second across everything that takes from it; 0 means no cap. Changes apply within a quarter second.
+#[derive(Default)]
+struct Bucket {
+    bps: AtomicU64,
+    /// When it was last topped up, and the bytes it held then; negative while a taker has overdrawn it.
+    state: Mutex<Option<(Instant, f64)>>,
+}
+
+impl Bucket {
+    const fn new() -> Self {
+        Self { bps: AtomicU64::new(0), state: Mutex::new(None) }
+    }
+
+    fn set(&self, bps: u64) {
+        self.bps.store(bps, Relaxed);
+    }
+
+    /// Waits until the bucket isn't overdrawn, then takes `bytes`, which may overdraw it for the next taker.
+    async fn take(&self, bytes: u64) {
+        loop {
+            let wait = {
+                let bps = self.bps.load(Relaxed) as f64;
+                if bps == 0. {
+                    return;
+                }
+                let mut state = self.state.lock().unwrap();
+                let now = Instant::now();
+                let (at, held) = state.unwrap_or((now, 0.));
+                // Holds at most a quarter second's worth, so an idle bucket can't burst far over the cap.
+                let held = (held + now.duration_since(at).as_secs_f64() * bps).min(bps / 4.);
+                if held >= 0. {
+                    *state = Some((now, held - bytes as f64));
+                    return;
+                }
+                *state = Some((now, held));
+                Duration::from_secs_f64((-held / bps).min(0.25))
+            };
+            tokio::time::sleep(wait).await;
+        }
+    }
+}
+
+/// Shared by every direct download.
+static TOTAL_LIMIT: Bucket = Bucket::new();
+
+/// Bytes per second for all direct downloads together; 0 means no limit. Applies to running downloads too.
+pub fn set_total_limit(bps: u64) {
+    TOTAL_LIMIT.set(bps);
+}
+
 #[derive(Clone)]
 pub struct Request {
     /// The download's id; its unfinished files live under it.
@@ -87,6 +137,8 @@ struct Shared {
     result: Mutex<Option<Result<PathBuf, String>>>,
     /// Lines for the download's log, taken by the app each tick.
     log: Mutex<Vec<String>>,
+    /// This download's own speed limit, on top of `TOTAL_LIMIT`.
+    limit: Bucket,
 }
 
 impl Shared {
@@ -145,6 +197,7 @@ pub struct Job {
 impl Job {
     pub fn start(&mut self, request: Request) {
         self.stop();
+        self.set_limit(request.limit_bps);
         let shared = self.shared.clone();
         self.task = Some(RUNTIME.spawn(async move {
             let result = match request.selector.clone() {
@@ -162,6 +215,11 @@ impl Job {
         }
         self.last = None;
         self.bps = 0;
+    }
+
+    /// Bytes per second; 0 means unlimited. Applies at once to direct downloads, and on the next start to yt-dlp.
+    pub fn set_limit(&self, bps: u64) {
+        self.shared.limit.set(bps);
     }
 
     pub fn is_running(&self) -> bool {
@@ -360,6 +418,47 @@ mod tests {
                 assert!(sent[2..].contains(&2), "{sent:?}");
             }
         }
+    }
+
+    #[test]
+    fn bucket_caps_all_takers_together() {
+        let bucket = Arc::new(Bucket::new());
+        bucket.set(2 * 1024 * 1024);
+        let started = Instant::now();
+        RUNTIME.block_on(async {
+            let tasks: Vec<_> = (0..4)
+                .map(|_| {
+                    let bucket = bucket.clone();
+                    RUNTIME.spawn(async move {
+                        for _ in 0..16 {
+                            bucket.take(16 * 1024).await;
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.unwrap();
+            }
+        });
+        // 1 MiB at 2 MiB/s, less the first chunk, which goes straight through.
+        let secs = started.elapsed().as_secs_f64();
+        assert!((0.4..0.8).contains(&secs), "{secs}");
+
+        // Lifting the cap releases a taker that is waiting.
+        let bucket = Arc::new(Bucket::new());
+        bucket.set(1);
+        let started = Instant::now();
+        RUNTIME.block_on(async {
+            bucket.take(1024 * 1024).await;
+            let waiting = RUNTIME.spawn({
+                let bucket = bucket.clone();
+                async move { bucket.take(1).await }
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            bucket.set(0);
+            waiting.await.unwrap();
+        });
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

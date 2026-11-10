@@ -374,7 +374,9 @@ impl SyphrApp {
     fn pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = AppSettings::get(cx);
         let max = settings.max_concurrent.max(1.) as usize;
-        let limit_bps = (settings.speed_limit_kbps.max(0.) * 1024.) as u64;
+        let default_kbps = settings.speed_limit_kbps.max(0.) as u64;
+        let total_bps = settings.total_limit_kbps.max(0.) as u64 * 1024;
+        crate::engine::set_total_limit(total_bps);
         let fragments = settings.fragments.max(1.) as u64;
         let (bin, ffmpeg, notify) = (
             crate::tools::resolve(&settings.ytdlp_path),
@@ -413,6 +415,7 @@ impl SyphrApp {
                 }
             }
             let running = job.is_running();
+            let limit_bps = d.limit_kbps.unwrap_or(default_kbps) * 1024;
             match d.status {
                 Status::Downloading | Status::Queued if !running && active < max => {
                     job.start(Request {
@@ -423,7 +426,11 @@ impl SyphrApp {
                         file_name: d.file_name.clone(),
                         ytdlp_bin: bin.clone(),
                         ffmpeg_bin: ffmpeg.clone(),
-                        limit_bps,
+                        // yt-dlp can't share the total limit, so it gets all of it, fixed at start.
+                        limit_bps: match (limit_bps, total_bps) {
+                            (0, limit) | (limit, 0) => limit,
+                            (own, total) => own.min(total),
+                        },
                         fragments,
                     });
                     d.status = Status::Downloading;
@@ -448,6 +455,7 @@ impl SyphrApp {
                 _ => {}
             }
             if job.is_running() {
+                job.set_limit(limit_bps);
                 d.received_bytes = job.received();
                 d.bytes_per_sec = job.speed();
                 d.record_speed();

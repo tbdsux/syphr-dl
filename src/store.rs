@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS log (
 CREATE INDEX IF NOT EXISTS log_download ON log (download_id);
 ";
 
+/// Columns added since the table was first created; `open` adds the ones an older database lacks.
+const ADDED_COLUMNS: &[(&str, &str)] = &[("limit_kbps", "INTEGER")];
+
 /// The download list and each download's log, in `downloads.db` in Syphr's folder.
 pub struct Store {
     conn: Connection,
@@ -52,6 +55,13 @@ impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        let have: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('downloads')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, kind) in ADDED_COLUMNS.iter().filter(|(name, _)| !have.iter().any(|h| h == name)) {
+            conn.execute_batch(&format!("ALTER TABLE downloads ADD COLUMN {name} {kind}"))?;
+        }
         Ok(Self { conn, saved: HashMap::new() })
     }
 
@@ -59,7 +69,7 @@ impl Store {
     pub fn load(&mut self) -> rusqlite::Result<Vec<Download>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                    file_name, path
+                    file_name, path, limit_kbps
              FROM downloads ORDER BY id DESC",
         )?;
         let downloads = stmt
@@ -81,6 +91,7 @@ impl Store {
                     path: r.get::<_, Option<String>>(12)?.map(Into::into),
                     fragments: Vec::new(),
                     speed_history: Vec::new(),
+                    limit_kbps: r.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -116,8 +127,8 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO downloads
                  (id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                  file_name, path)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                  file_name, path, limit_kbps)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     d.id,
                     d.name.as_ref(),
@@ -132,6 +143,7 @@ impl Store {
                     d.selector,
                     d.file_name,
                     d.path.as_ref().map(|p| p.to_string_lossy()),
+                    d.limit_kbps,
                 ],
             )?;
             let before = self.saved.get(&d.id).map(|s| s.status);
@@ -182,6 +194,7 @@ fn append(conn: &Connection, id: u64, message: &str) -> rusqlite::Result<usize> 
 fn same(a: &Download, b: &Download) -> bool {
     (&a.name, &a.url, a.kind, a.status, a.total_bytes, a.received_bytes, &a.folder, &a.format, &a.path)
         == (&b.name, &b.url, b.kind, b.status, b.total_bytes, b.received_bytes, &b.folder, &b.format, &b.path)
+        && a.limit_kbps == b.limit_kbps
 }
 
 fn status_key(s: Status) -> &'static str {
@@ -248,6 +261,7 @@ mod tests {
             path: Some("/tmp/1.mp4".into()),
             fragments: vec![(1., 0.5)],
             speed_history: Vec::new(),
+            limit_kbps: None,
         }
     }
 
@@ -280,6 +294,34 @@ mod tests {
         assert_eq!(reopened.next_id(), 3);
         // Windows won't delete a database that's still open.
         drop((store, reopened));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn adds_new_columns_to_an_old_database() {
+        let dir = std::env::temp_dir().join(format!("syphr-store-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("downloads.db");
+        let _ = std::fs::remove_file(&path);
+        // The table as the first release made it.
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        old.execute(
+            "INSERT INTO downloads (id, name, url, kind, source, status, received_bytes, folder)
+             VALUES (1, 'a.zip', 'https://a.com/a.zip', 'archive', 'direct', 'paused', 5, '~/Downloads')",
+            [],
+        )
+        .unwrap();
+        drop(old);
+
+        let mut store = Store::open(&path).unwrap();
+        let mut list = store.load().unwrap();
+        assert_eq!((list[0].id, list[0].status, list[0].limit_kbps), (1, Status::Paused, None));
+        list[0].limit_kbps = Some(250);
+        store.sync(&list);
+        drop(store);
+        let loaded = Store::open(&path).unwrap().load().unwrap();
+        assert_eq!(loaded[0].limit_kbps, Some(250));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

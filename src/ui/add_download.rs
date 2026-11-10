@@ -202,6 +202,7 @@ impl AddDownload {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            limit_kbps: None,
         };
         match &self.lookup {
             Lookup::NotNeeded => Err("Enter a link that starts with http:// or https://"),

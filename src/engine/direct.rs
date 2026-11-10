@@ -5,14 +5,14 @@ use std::{
     io,
     path::PathBuf,
     sync::{Arc, Mutex, atomic::Ordering::Relaxed},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use reqwest::{StatusCode, header};
 use tokio::task::JoinSet;
 
 use super::names::{chosen_name, file_name_of, move_file, part_path, response_file_name, unique_path};
-use super::{Layout, Part, Request, Shared, client, err};
+use super::{Layout, Part, Request, Shared, TOTAL_LIMIT, client, err};
 
 const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -37,11 +37,10 @@ pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Resul
     let file = Arc::new(OpenOptions::new().create(true).write(true).truncate(fresh).open(&part_path).map_err(err)?);
 
     let connections = request.fragments.max(1) as usize;
-    let limit = request.limit_bps / connections as u64;
     let mut set = JoinSet::new();
     let spawn = |set: &mut JoinSet<_>, i: usize, part: Arc<Part>| {
         let (request, file, ranged, shared) = (request.clone(), file.clone(), layout.ranged, shared.clone());
-        set.spawn(async move { fetch_part_with_retries(&request, &file, ranged, i, &part, limit, &shared).await });
+        set.spawn(async move { fetch_part_with_retries(&request, &file, ranged, i, &part, &shared).await });
     };
     for (i, part) in layout.parts().into_iter().enumerate() {
         if !layout.ranged || part.left() > 0 {
@@ -188,12 +187,11 @@ async fn fetch_part_with_retries(
     ranged: bool,
     i: usize,
     part: &Part,
-    limit: u64,
     shared: &Shared,
 ) -> Result<(), String> {
     let mut attempt = 0;
     loop {
-        match fetch_part(request, file, ranged, i, part, limit, shared).await {
+        match fetch_part(request, file, ranged, i, part, shared).await {
             Ok(()) => {
                 shared.log(format!("Part {}: done", i + 1));
                 return Ok(());
@@ -214,7 +212,6 @@ async fn fetch_part(
     ranged: bool,
     i: usize,
     part: &Part,
-    limit: u64,
     shared: &Shared,
 ) -> Result<(), String> {
     if !ranged {
@@ -237,10 +234,8 @@ async fn fetch_part(
         return Err("The server stopped accepting partial requests.".into());
     }
 
-    let started = Instant::now();
-    let mut got = 0u64;
     while let Some(chunk) = resp.chunk().await.map_err(err)? {
-        got += {
+        let wrote = {
             let end = part.end.lock().unwrap();
             let done = part.done.load(Relaxed);
             // A split may have moved the end below what this response still carries.
@@ -250,12 +245,8 @@ async fn fetch_part(
             part.done.fetch_add(chunk.len() as u64, Relaxed);
             chunk.len() as u64
         };
-        if limit > 0 {
-            let due = Duration::from_secs_f64(got as f64 / limit as f64);
-            if let Some(wait) = due.checked_sub(started.elapsed()) {
-                tokio::time::sleep(wait).await;
-            }
-        }
+        shared.limit.take(wrote).await;
+        TOTAL_LIMIT.take(wrote).await;
         if part.left() == 0 {
             break;
         }

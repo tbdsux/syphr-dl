@@ -1,23 +1,26 @@
 //! The details window for one download, opened by double-clicking its row.
 
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar,
+    ActiveTheme, IconName, Sizable, TitleBar,
     button::{Button, ButtonVariants},
     chart::AreaChart,
+    form::{Field, Form},
     h_flex,
+    input::{Input, InputEvent, InputState},
     progress::Progress,
     scroll::ScrollableElement as _,
+    tab::{Tab, TabBar},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SyphrApp;
-use crate::download::{SPEED_SAMPLES, format_bytes, format_duration};
+use crate::download::{Download, SPEED_SAMPLES, format_bytes, format_duration};
 use crate::ui::downloads_table::{
     eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text, status_label,
 };
+use crate::ui::settings::AppSettings;
 
 impl SyphrApp {
     /// One window per download; a second double-click brings the open one forward.
@@ -37,25 +40,56 @@ impl SyphrApp {
             };
             let view = app.clone();
             if let Ok((handle, _)) =
-                gpui_kit::open_window(options, cx, |_, cx| cx.new(|cx| DownloadDetails::new(view, id, cx)))
+                gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| DownloadDetails::new(view, id, window, cx)))
             {
                 app.update(cx, |this, _| this.details.insert(id, handle));
             }
         });
     }
+
+    /// Changes one download and saves the list.
+    pub fn edit_download(&mut self, id: u64, edit: impl FnOnce(&mut Download), cx: &mut Context<Self>) {
+        if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+            edit(d);
+            self.sync_table(cx);
+        }
+    }
 }
+
+const LOG_TAB: usize = 0;
 
 pub struct DownloadDetails {
     app: WeakEntity<SyphrApp>,
     id: u64,
-    show_log: bool,
-    _observe: Subscription,
+    tab: usize,
+    /// KB/s; empty uses Settings' limit.
+    limit: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl DownloadDetails {
-    fn new(app: Entity<SyphrApp>, id: u64, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&app, |_, _, cx| cx.notify());
-        Self { app: app.downgrade(), id, show_log: true, _observe: observe }
+    fn new(app: Entity<SyphrApp>, id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let d = app.read(cx).downloads.iter().find(|d| d.id == id).cloned();
+        let limit = d.as_ref().and_then(|d| d.limit_kbps).map(|l| l.to_string()).unwrap_or_default();
+        let limit = cx.new(|cx| InputState::new(window, cx).placeholder("Default").default_value(limit));
+        let subscriptions = vec![
+            cx.observe(&app, |_, _, cx| cx.notify()),
+            cx.subscribe(&limit, |this, input, event: &InputEvent, cx| {
+                if let (InputEvent::Change, Some(limit)) = (event, parse_limit(&input.read(cx).value())) {
+                    let id = this.id;
+                    this.app.update(cx, |app, cx| app.edit_download(id, |d| d.limit_kbps = limit, cx)).ok();
+                }
+            }),
+        ];
+        Self { app: app.downgrade(), id, tab: LOG_TAB, limit, _subscriptions: subscriptions }
+    }
+}
+
+/// None when the text isn't a limit; Some(None) when empty, which means Settings' limit.
+fn parse_limit(text: &str) -> Option<Option<u64>> {
+    match text.trim() {
+        "" => Some(None),
+        text => text.parse().ok().map(Some),
     }
 }
 
@@ -142,18 +176,6 @@ impl DownloadDetails {
                                 },
                             ))
                             .child(
-                                Button::new("detail-log")
-                                    .small()
-                                    .ghost()
-                                    .icon(Icon::new(Lucide::ScrollText))
-                                    .selected(self.show_log)
-                                    .tooltip(if self.show_log { "Hide log" } else { "Show log" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_log = !this.show_log;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
                                 Button::new("detail-copy")
                                     .small()
                                     .ghost()
@@ -225,7 +247,22 @@ impl DownloadDetails {
                     ))
                     .child(stat("Save to", text(d.folder.to_string()))),
             )
-            .when(self.show_log, |this| {
+            .child(
+                TabBar::new("detail-tabs")
+                    .underline()
+                    .small()
+                    .selected_index(self.tab)
+                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        this.tab = *ix;
+                        cx.notify();
+                    }))
+                    .child(Tab::new().label("Log"))
+                    .child(Tab::new().label("Options")),
+            )
+            .map(|this| {
+                if self.tab != LOG_TAB {
+                    return this.child(self.render_options(d, cx));
+                }
                 // Newest first, so a running download's latest line is in view without scrolling.
                 this.child(
                     v_flex()
@@ -248,5 +285,19 @@ impl DownloadDetails {
                         })),
                 )
             })
+    }
+
+    fn render_options(&self, _d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
+        let default = match AppSettings::get(cx).speed_limit_kbps as u64 {
+            0 => "no limit".to_string(),
+            kbps => format!("{kbps} KB/s"),
+        };
+        let limit_help = match parse_limit(&self.limit.read(cx).value()) {
+            Some(_) => format!("Empty uses the default from Settings ({default}). 0 means no limit."),
+            None => "Enter a whole number of KB/s.".into(),
+        };
+        v_flex().flex_1().min_h(rems(6.)).overflow_y_scrollbar().child(Form::new().child(
+            Field::new().label("Speed limit (KB/s)").description(limit_help).child(Input::new(&self.limit).small()),
+        ))
     }
 }

@@ -58,6 +58,8 @@ pub struct Download {
     pub fragments: Vec<(f32, f32)>,
     /// Recent speeds in bytes per second, oldest first; not saved, so empty after a restart.
     pub speed_history: Vec<u64>,
+    /// This download's own speed limit in KB/s, 0 for none; None uses Settings' limit per download.
+    pub limit_kbps: Option<u64>,
 }
 
 impl Download {
@@ -131,6 +133,7 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            limit_kbps: None,
         };
         assert!((d.progress() - 64.58).abs() < 0.1);
         assert_eq!(d.eta_secs(), Some(4));
