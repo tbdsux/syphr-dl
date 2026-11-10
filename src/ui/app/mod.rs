@@ -593,6 +593,52 @@ impl SyphrApp {
         self.take_request(AddRequest { urls, ..Default::default() }, window, cx);
     }
 
+    pub fn import_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = picked.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(Ok(Some(paths))) => this.take_files(&paths, window, cx),
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(e)) => window.push_notification(format!("Couldn't open the file picker: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Saves the selected downloads' links, or every download's, one per line.
+    pub fn export_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let urls: Vec<String> = self
+            .downloads
+            .iter()
+            .filter(|d| self.checked.is_empty() || self.checked.contains(&d.id))
+            .rev()
+            .map(|d| d.url.to_string())
+            .collect();
+        if urls.is_empty() {
+            window.push_notification("There are no downloads to export.", cx);
+            return;
+        }
+        let dir = expand_home(&AppSettings::get(cx).download_dir);
+        let picked = cx.prompt_for_new_path(&dir, Some("Syphr links.txt"));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = picked.await else { return };
+            let message = match std::fs::write(&path, urls.join("\n") + "\n") {
+                Ok(()) if urls.len() == 1 => "Exported 1 link".to_string(),
+                Ok(()) => format!("Exported {} links", urls.len()),
+                Err(e) => format!("Couldn't save the links: {e}"),
+            };
+            cx.update(|window, cx| window.push_notification(message, cx)).ok();
+        })
+        .detach();
+    }
+
     /// Opens the batch dialog; `folder` defaults to the one in Settings.
     pub fn open_batch(
         &mut self,

@@ -30,6 +30,8 @@ actions!(
     [
         NewDownload,
         BatchDownload,
+        ImportLinks,
+        ExportLinks,
         OpenSettings,
         Quit,
         CloseWindow,
@@ -291,6 +293,10 @@ fn menus() -> Vec<Menu> {
             Menu::new("File").items([
                 MenuItem::action("New Download…", NewDownload),
                 MenuItem::action("Batch Download…", BatchDownload),
+                MenuItem::separator(),
+                MenuItem::action("Import Links…", ImportLinks),
+                MenuItem::action("Export Links…", ExportLinks),
+                MenuItem::separator(),
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", CloseWindow),
@@ -315,6 +321,9 @@ fn menus() -> Vec<Menu> {
         Menu::new("File").items([
             MenuItem::action("New Download…", NewDownload),
             MenuItem::action("Batch Download…", BatchDownload),
+            MenuItem::separator(),
+            MenuItem::action("Import Links…", ImportLinks),
+            MenuItem::action("Export Links…", ExportLinks),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),
