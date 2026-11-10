@@ -94,6 +94,27 @@ impl SyphrApp {
         self.save_queues(cx);
     }
 
+    /// Asks first; the dialog opens in whichever window asked.
+    pub fn confirm_delete_queue(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.queues.iter().find(|q| q.id == id && id != MAIN).map(|q| q.name.clone()) else {
+            return;
+        };
+        let app = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let app = app.clone();
+            alert
+                .title(format!("Delete “{name}”?"))
+                .description("Its downloads move to Main.")
+                .confirm()
+                .ok_text("Delete")
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    app.update(cx, |this, cx| this.delete_queue(id, cx)).ok();
+                    true
+                })
+        });
+    }
+
     /// Its downloads move to Main.
     pub fn delete_queue(&mut self, id: u64, cx: &mut Context<Self>) {
         if id == MAIN {
@@ -447,25 +468,12 @@ fn queue_page(app: &WeakEntity<SyphrApp>, q: &Queue, now: NaiveDateTime, global:
             ]),
         );
     if id != MAIN {
-        let (app, name) = (a(), q.name.clone());
+        let app = a();
         page = page.title_suffix(move |_, _| {
-            let (app, name) = (app.clone(), name.clone());
+            let app = app.clone();
             Button::new(("delete-queue", id as usize)).small().ghost().icon(IconName::Delete).label("Delete…").on_click(
                 move |_, window, cx| {
-                    let (app, name) = (app.clone(), name.clone());
-                    window.open_alert_dialog(cx, move |alert, _, _| {
-                        let app = app.clone();
-                        alert
-                            .title(format!("Delete “{name}”?"))
-                            .description("Its downloads move to Main.")
-                            .confirm()
-                            .ok_text("Delete")
-                            .ok_variant(ButtonVariant::Danger)
-                            .on_ok(move |_, _, cx| {
-                                app.update(cx, |this, cx| this.delete_queue(id, cx)).ok();
-                                true
-                            })
-                    });
+                    app.update(cx, |this, cx| this.confirm_delete_queue(id, window, cx)).ok();
                 },
             )
         });

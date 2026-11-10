@@ -8,6 +8,7 @@ use gpui_kit::component::{
     h_flex,
     input::Input,
     kbd::Kbd,
+    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     popover::Popover,
     scroll::ScrollableElement as _,
     table::DataTable,
@@ -17,6 +18,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::download::{Kind, Status, format_bytes};
+use crate::queue::MAIN;
 use crate::ui::batch::BatchKind;
 use crate::ui::downloads_table::{DownloadsTable, kind_color, kind_icon};
 use crate::ui::settings::AppSettings;
@@ -204,7 +206,18 @@ impl SyphrApp {
                             )
                             .children(self.queues.iter().map(|q| {
                                 let icon = if q.scheduled() { Lucide::CalendarClock } else { Lucide::ListOrdered };
-                                filter_row(q.name.clone().into(), Icon::new(icon), Filter::Queue(q.id), None, cx)
+                                let (id, app) = (q.id, cx.entity().downgrade());
+                                // Keyed by queue id, so two queues with one name keep separate menus.
+                                div()
+                                    .id(("queue-row", id as usize))
+                                    .child(filter_row(
+                                        q.name.clone().into(),
+                                        Icon::new(icon),
+                                        Filter::Queue(id),
+                                        None,
+                                        cx,
+                                    ))
+                                    .context_menu(move |menu, _, _| queue_menu(menu, app.clone(), id))
                             })),
                     )
                     .overflow_y_scrollbar(),
@@ -448,6 +461,24 @@ fn group_title(title: &'static str, cx: &App) -> Div {
 }
 
 /// A sidebar row over an optional `(share, color)` wash.
+/// A sidebar queue's right-click menu.
+fn queue_menu(menu: PopupMenu, app: WeakEntity<SyphrApp>, id: u64) -> PopupMenu {
+    let item = |label: &'static str, icon: Icon, f: fn(&mut SyphrApp, u64, &mut Window, &mut Context<SyphrApp>)| {
+        let app = app.clone();
+        PopupMenuItem::new(label).icon(icon).on_click(move |_, window, cx| {
+            app.update(cx, |this, cx| f(this, id, window, cx)).ok();
+        })
+    };
+    menu.item(item("Start queue", Icon::new(IconName::Play), |this, id, _, cx| this.start_queue(id, cx)))
+        .item(item("Stop queue", Icon::new(IconName::Square), |this, id, _, cx| this.stop_queue(id, cx)))
+        .item(item("Edit…", Icon::new(Lucide::CalendarClock), |this, id, _, cx| this.open_queues(Some(id), cx)))
+        .when(id != MAIN, |menu| {
+            menu.separator().item(item("Delete…", Icon::new(IconName::Delete), |this, id, window, cx| {
+                this.confirm_delete_queue(id, window, cx)
+            }))
+        })
+}
+
 fn nav_row(label: impl Into<SharedString>, icon: Icon, wash: Option<(f32, Hsla)>, cx: &App) -> Stateful<Div> {
     let label = label.into();
     let radius = cx.theme().radius;
