@@ -475,6 +475,11 @@ impl Render for SyphrApp {
                         .rounded(cx.theme().radius_lg)
                         .bg(cx.theme().background)
                         .overflow_hidden()
+                        // Dropped link lists and web shortcuts; GPUI only delivers files, not dragged text.
+                        .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                            this.take_files(paths.paths(), window, cx)
+                        }))
                         .child(self.render_toolbar(cx))
                         .when(self.checked.len() > 1, |this| this.child(self.render_bulk_bar(cx)))
                         .child({

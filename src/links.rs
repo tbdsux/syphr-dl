@@ -4,6 +4,8 @@ use std::collections::HashSet;
 
 /// Most links one pattern may produce.
 pub const MAX_LINKS: usize = 10_000;
+/// Dropped or imported files bigger than this aren't read for links.
+const MAX_PAGE_BYTES: u64 = 5 << 20;
 
 /// File types the clipboard watcher looks for, until the user changes them.
 pub const DEFAULT_TYPES: &str = "3gp 7z aac apk appimage avi bz2 deb dmg epub exe flac gz iso m4a m4b m4v mkv mov mp3 \
@@ -103,6 +105,29 @@ fn range(inner: &str) -> Option<Result<Vec<String>, String>> {
     Some(Ok(values.into_iter().map(|c| char::from(c).to_string()).collect()))
 }
 
+/// The links in a dropped or imported file: a text list, or a `.webloc` / `.url` web shortcut. Large files are
+/// skipped rather than read, in case a download itself was dropped.
+pub fn links_in_file(path: &std::path::Path) -> Vec<String> {
+    if std::fs::metadata(path).map_or(true, |m| !m.is_file() || m.len() > MAX_PAGE_BYTES) {
+        return Vec::new();
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
+        Some("webloc" | "url") => shortcut_link(&text).into_iter().collect(),
+        _ => parse_list(&text),
+    }
+}
+
+/// The link inside a `.webloc` (macOS) or `.url` (Windows) web shortcut.
+pub fn shortcut_link(text: &str) -> Option<String> {
+    let link = match text.find("<string>") {
+        Some(start) => text[start + "<string>".len()..].split("</string>").next()?,
+        None => text.lines().find_map(|line| line.trim().strip_prefix("URL="))?,
+    };
+    let link = link.trim().replace("&amp;", "&");
+    is_web_link(&link).then_some(link)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +183,31 @@ mod tests {
         assert!(offered_link("https://a.com/x.zip https://a.com/y.zip", "zip").is_none());
         assert!(offered_link("see https://a.com/x.zip", "zip").is_none());
         assert!(offered_link("https://a.com/x.zip", "").is_none());
+    }
+
+    #[test]
+    fn reads_dropped_files() {
+        let dir = std::env::temp_dir().join(format!("syphr-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let list = file("links.txt", "# saved\nhttps://a.com/1.zip\nhttps://a.com/2.zip\n");
+        assert_eq!(links_in_file(&list), ["https://a.com/1.zip", "https://a.com/2.zip"]);
+        let webloc = file("x.WEBLOC", "<plist><dict><string>https://a.com/w</string></dict></plist>");
+        assert_eq!(links_in_file(&webloc), ["https://a.com/w"]);
+        assert!(links_in_file(&file("bin.dat", "\u{0}\u{1}")).is_empty());
+        assert!(links_in_file(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_web_shortcuts() {
+        let webloc = "<plist><dict><key>URL</key><string>https://a.com/x?a=1&amp;b=2</string></dict></plist>";
+        assert_eq!(shortcut_link(webloc).as_deref(), Some("https://a.com/x?a=1&b=2"));
+        assert_eq!(shortcut_link("[InternetShortcut]\r\nURL=https://a.com/y\r\n").as_deref(), Some("https://a.com/y"));
+        assert_eq!(shortcut_link("hello"), None);
     }
 }

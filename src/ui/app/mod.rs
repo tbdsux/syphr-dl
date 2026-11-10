@@ -577,6 +577,22 @@ impl SyphrApp {
         }
     }
 
+    /// Adds the links in dropped or imported files: one opens the panel, more the batch dialog.
+    pub fn take_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let mut urls: Vec<String> = Vec::new();
+        for link in paths.iter().flat_map(|path| links::links_in_file(path)) {
+            if !urls.contains(&link) {
+                urls.push(link);
+            }
+        }
+        if urls.is_empty() {
+            window.push_notification("No links found. Use a text file with one link per line, or a web shortcut.", cx);
+            return;
+        }
+        crate::show_main_window(cx);
+        self.take_request(AddRequest { urls, ..Default::default() }, window, cx);
+    }
+
     /// Opens the batch dialog; `folder` defaults to the one in Settings.
     pub fn open_batch(
         &mut self,
