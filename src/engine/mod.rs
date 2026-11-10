@@ -2,6 +2,7 @@
 //! The app polls each `Job` for progress; a job's parts survive a pause, so resuming continues where it stopped.
 
 mod direct;
+mod ftp;
 mod names;
 pub mod ytdlp;
 
@@ -733,6 +734,32 @@ mod offline {
             assert_content(&path, total);
         }
         assert!(SERVERS.lock().unwrap().is_empty(), "every slot was given back");
+    }
+
+    #[test]
+    fn downloads_and_resumes_over_ftp() {
+        let total = 5 * 1024 * 1024 + 3;
+        let served = direct::server::serve_ftp(total);
+        let mut job = Job::default();
+        let request = Request {
+            access: Access { username: "me".into(), password: "pw".into(), ..Default::default() },
+            fragments: 3,
+            ..request(u64::MAX - 13, &served.url)
+        };
+        job.start(request.clone());
+        std::thread::sleep(Duration::from_millis(300));
+        job.stop();
+        let paused = job.received();
+        assert!(paused > 0 && paused < total, "{paused}");
+        job.start(request);
+        let path = finish(&mut job).unwrap();
+        assert!(path.ends_with("file one.bin"), "{}", path.display());
+        assert_content(&path, total);
+        let seen = served.seen.lock().unwrap();
+        assert!(seen.iter().any(|c| c == "USER me") && seen.iter().any(|c| c == "PASS pw"), "{seen:?}");
+        let rests: Vec<u64> = seen.iter().filter_map(|c| c.strip_prefix("REST ")?.parse().ok()).collect();
+        // Three parts, then each resumed from where it stopped.
+        assert!(rests.len() >= 5 && rests.iter().filter(|r| **r > 0).all(|r| *r < total), "{rests:?}");
     }
 
     #[test]

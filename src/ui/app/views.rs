@@ -208,7 +208,7 @@ impl SyphrApp {
                                 });
                                 if !pasted {
                                     window.push_notification(
-                                        "Copy a link that starts with http:// or https:// first.",
+                                        "Copy a link that starts with http://, https:// or ftp:// first.",
                                         cx,
                                     );
                                 }

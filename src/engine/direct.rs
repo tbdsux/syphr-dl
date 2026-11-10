@@ -12,7 +12,7 @@ use reqwest::{StatusCode, header};
 use tokio::task::JoinSet;
 
 use super::names::{chosen_name, file_name_of, move_file, part_path, response_file_name, unique_path};
-use super::{Access, Layout, Part, Request, ServerSlot, Shared, TOTAL_LIMIT, err};
+use super::{Access, Layout, Part, Request, ServerSlot, Shared, TOTAL_LIMIT, err, ftp};
 
 const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -89,6 +89,9 @@ pub struct LinkInfo {
 
 /// One tiny ranged request tells us the size, the name, and whether parts are possible.
 pub async fn inspect(url: &str, access: &Access) -> Result<LinkInfo, String> {
+    if ftp::is_ftp(url) {
+        return ftp::inspect(url, access).await;
+    }
     let resp = access
         .get(url)?
         .header(header::RANGE, "bytes=0-0")
@@ -228,22 +231,30 @@ async fn fetch_part(
         part.done.store(0, Relaxed);
         file.set_len(0).map_err(err)?;
     }
-    let mut req = request.access.get(&request.url)?;
-    let range = if ranged {
-        let range = format!("bytes={}-{}", part.start + part.done.load(Relaxed), part.end());
-        req = req.header(header::RANGE, &range);
-        format!("Range: {range}")
+    let offset = part.start + part.done.load(Relaxed);
+    let mut body = if ftp::is_ftp(&request.url) {
+        shared.log(format!("Part {}: RETR from byte {offset}", i + 1));
+        Body::Ftp(ftp::Body::open(&request.url, &request.access, offset).await?)
     } else {
-        "no range, from the start".into()
+        let mut req = request.access.get(&request.url)?;
+        let range = if ranged {
+            let range = format!("bytes={offset}-{}", part.end());
+            req = req.header(header::RANGE, &range);
+            format!("Range: {range}")
+        } else {
+            "no range, from the start".into()
+        };
+        let resp = req.send().await.map_err(err)?;
+        shared.log(format!("Part {}: GET ({range}) → {}", i + 1, resp.status()));
+        let resp = resp.error_for_status().map_err(err)?;
+        if ranged && resp.status() != StatusCode::PARTIAL_CONTENT {
+            return Err("The server stopped accepting partial requests.".into());
+        }
+        Body::Http(resp)
     };
-    let resp = req.send().await.map_err(err)?;
-    shared.log(format!("Part {}: GET ({range}) → {}", i + 1, resp.status()));
-    let mut resp = resp.error_for_status().map_err(err)?;
-    if ranged && resp.status() != StatusCode::PARTIAL_CONTENT {
-        return Err("The server stopped accepting partial requests.".into());
-    }
 
-    while let Some(chunk) = resp.chunk().await.map_err(err)? {
+    let mut chunk = Vec::new();
+    while body.read(&mut chunk).await? {
         let wrote = {
             let end = part.end.lock().unwrap();
             let done = part.done.load(Relaxed);
@@ -265,6 +276,26 @@ async fn fetch_part(
         return Err("The connection closed before the part finished.".into());
     }
     Ok(())
+}
+
+enum Body {
+    Http(reqwest::Response),
+    Ftp(ftp::Body),
+}
+
+impl Body {
+    /// Replaces `buf` with the next bytes; false once the server has sent everything.
+    async fn read(&mut self, buf: &mut Vec<u8>) -> Result<bool, String> {
+        match self {
+            Body::Http(resp) => {
+                let Some(chunk) = resp.chunk().await.map_err(err)? else { return Ok(false) };
+                buf.clear();
+                buf.extend_from_slice(&chunk);
+                Ok(true)
+            }
+            Body::Ftp(ftp) => ftp.read(buf).await,
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -422,6 +453,70 @@ pub(super) mod server {
                         }
                         if throttle {
                             std::thread::sleep(Duration::from_millis(60));
+                        }
+                    }
+                });
+            }
+        });
+        Served { url, seen }
+    }
+
+    /// The same bytes over FTP, with `SIZE`, `REST` and passive `RETR`. Commands are logged in `seen`.
+    pub fn serve_ftp(total: u64) -> Served {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ftp://{}/pub/file%20one.bin", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for control in listener.incoming().flatten() {
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(control.try_clone().unwrap());
+                    let mut control = control;
+                    let (mut offset, mut data) = (0, None);
+                    let mut reply = |text: String| control.write_all(format!("{text}\r\n").as_bytes()).is_ok();
+                    reply("220 ready".into());
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                        let command = std::mem::take(&mut line).trim().to_string();
+                        log.lock().unwrap().push(command.clone());
+                        let (verb, arg) = command.split_once(' ').unwrap_or((&command, ""));
+                        let ok = match verb.to_uppercase().as_str() {
+                            "USER" => reply("331 password".into()),
+                            "PASS" => reply("230 in".into()),
+                            "TYPE" => reply("200 type".into()),
+                            "SIZE" if arg == "/pub/file one.bin" => reply(format!("213 {total}")),
+                            "REST" => {
+                                offset = arg.parse().unwrap();
+                                reply("350 rest".into())
+                            }
+                            "PASV" => {
+                                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                                let port = listener.local_addr().unwrap().port();
+                                data = Some(listener);
+                                reply(format!("227 Passive (127,0,0,1,{},{})", port >> 8, port & 255))
+                            }
+                            "RETR" => {
+                                reply("150 sending".into());
+                                let (mut stream, _) = data.take().unwrap().accept().unwrap();
+                                let body: Vec<u8> = (offset..total).map(byte).collect();
+                                for chunk in body.chunks(64 * 1024) {
+                                    if stream.write_all(chunk).is_err() {
+                                        break;
+                                    }
+                                    std::thread::sleep(Duration::from_millis(20));
+                                }
+                                drop(stream);
+                                reply("226 done".into())
+                            }
+                            "QUIT" => {
+                                reply("221 bye".into());
+                                false
+                            }
+                            _ => reply("502 no".into()),
+                        };
+                        if !ok {
+                            break;
                         }
                     }
                 });

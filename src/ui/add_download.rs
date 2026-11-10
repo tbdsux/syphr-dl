@@ -180,7 +180,7 @@ impl AddDownload {
     pub fn request(&self, id: u64, cx: &App) -> Result<Download, &'static str> {
         let url = self.url_text(cx);
         if !is_web_link(&url) {
-            return Err("Enter a link that starts with http:// or https://");
+            return Err("Enter a link that starts with http://, https:// or ftp://");
         }
         let folder: SharedString = self.folder.read(cx).value().trim().to_string().into();
         let typed = self.name.read(cx).value().trim().to_string();
@@ -206,7 +206,7 @@ impl AddDownload {
             access: Default::default(),
         };
         match &self.lookup {
-            Lookup::NotNeeded => Err("Enter a link that starts with http:// or https://"),
+            Lookup::NotNeeded => Err("Enter a link that starts with http://, https:// or ftp://"),
             Lookup::Loading => Err("Wait for the link to be checked."),
             Lookup::Failed(_) => Err("This link couldn't be checked. Fix the link and try again."),
             Lookup::File(info) => Ok(Download {
@@ -324,7 +324,7 @@ impl AddDownload {
 }
 
 fn is_web_link(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://")) && url.len() > "https://".len()
+    ["http://", "https://", "ftp://"].iter().any(|scheme| url.len() > scheme.len() && url.starts_with(scheme))
 }
 
 pub fn kind_for(url: &str) -> Kind {
@@ -355,7 +355,7 @@ impl Render for AddDownload {
         // Name, folder and Start appear only once the link checked out.
         let ready = matches!(self.lookup, Lookup::Ready(_) | Lookup::File(_));
         let label = if matches!(self.lookup, Lookup::File(_)) { "File" } else { "Format" };
-        let hint = (!is_web_link(&url)).then_some("Links start with http:// or https://");
+        let hint = (!is_web_link(&url)).then_some("Links start with http://, https:// or ftp://");
         let lookup = self.render_lookup(cx);
         v_flex()
             .w(rems(34.))
@@ -417,7 +417,9 @@ mod tests {
     fn link_checks() {
         assert!(is_web_link("https://a.com/x.zip"));
         assert!(!is_web_link("https://"));
-        assert!(!is_web_link("ftp://a.com/x"));
+        assert!(is_web_link("ftp://a.com/x"));
+        assert!(!is_web_link("ftp://"));
+        assert!(!is_web_link("file:///x"));
         assert_eq!(kind_for("https://a.com/setup.dmg?token=1"), Kind::Program);
         assert_eq!(kind_for("https://a.com/song.MP3"), Kind::Music);
     }
