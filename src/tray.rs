@@ -236,6 +236,8 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            queue: crate::queue::MAIN,
+            position: 0,
         }
     }
 

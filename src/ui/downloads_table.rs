@@ -15,6 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::download::{Download, Kind, Source, Status, format_bytes, format_duration};
+use crate::queue::Move;
 use crate::ui::app::SyphrApp;
 
 const CHECK: usize = 0;
@@ -45,8 +46,12 @@ pub struct DownloadsTable {
     pub width: Pixels,
     /// The text size the columns were laid out for; they're sized in rems.
     pub rem: Pixels,
-    /// Sorted column and direction; None keeps the newest-added first.
+    /// Sorted column and direction; None keeps the newest-added first, or queue order in a queue.
     pub sort: Option<(usize, ColumnSort)>,
+    /// Showing one queue: rows default to the order they start in, and can be reordered.
+    pub queue_order: bool,
+    /// Every queue by id and name, for Move to queue.
+    pub queues: Vec<(u64, SharedString)>,
     /// Every column in the user's order; `cols` is the visible part of it, indexed by table column.
     order: Vec<usize>,
     cols: Vec<usize>,
@@ -73,6 +78,8 @@ impl DownloadsTable {
             width: px(0.),
             rem: px(0.),
             sort: None,
+            queue_order: false,
+            queues: Vec::new(),
             order: (CHECK..=ACTIONS).collect(),
             cols: (CHECK..=ACTIONS).collect(),
             widths: WIDTHS,
@@ -149,7 +156,13 @@ impl DownloadsTable {
     }
 
     pub fn sort_rows(&mut self) {
-        let Some((col, dir)) = self.sort else { return self.rows.sort_by_key(|d| std::cmp::Reverse(d.id)) };
+        let Some((col, dir)) = self.sort else {
+            return if self.queue_order {
+                self.rows.sort_by_key(|d| (d.position, d.id))
+            } else {
+                self.rows.sort_by_key(|d| std::cmp::Reverse(d.id))
+            };
+        };
         let size = |d: &Download| d.total_bytes.unwrap_or(d.received_bytes);
         self.rows.sort_by(|a, b| {
             let ord = match col {
@@ -223,6 +236,7 @@ pub fn status_label(status: Status, cx: &App) -> Div {
         Status::Downloading => "Downloading",
         Status::Paused => "Paused",
         Status::Queued => "Queued",
+        Status::Later => "Later",
         Status::Completed => "Completed",
         Status::Missing => "Missing",
         Status::Failed => "Failed",
@@ -239,7 +253,7 @@ pub fn progress_color(status: Status, cx: &App) -> Hsla {
     match status {
         Status::Completed => theme.success,
         Status::Failed => theme.danger,
-        Status::Paused | Status::Queued | Status::Missing => theme.muted_foreground,
+        Status::Paused | Status::Queued | Status::Later | Status::Missing => theme.muted_foreground,
         Status::Downloading => theme.primary,
     }
 }
@@ -286,6 +300,7 @@ pub fn next_step(status: Status) -> (&'static str, IconName, Option<Status>) {
     match status {
         Status::Downloading | Status::Queued => ("Pause", IconName::Pause, Some(Status::Paused)),
         Status::Paused => ("Resume", IconName::Play, Some(Status::Downloading)),
+        Status::Later => ("Start now", IconName::Play, Some(Status::Downloading)),
         Status::Failed => ("Retry", IconName::RotateCw, Some(Status::Queued)),
         Status::Completed => ("Show in folder", IconName::FolderOpen, None),
         Status::Missing => ("Download again", IconName::RotateCw, Some(Status::Queued)),
@@ -507,6 +522,8 @@ impl TableDelegate for DownloadsTable {
                 let (label, icon, next) = next_step(d.status);
                 let (app, app2) = (self.app.clone(), self.app.clone());
                 let (url, saved) = (d.url.clone(), d.path.is_some());
+                let (queue_order, queue) = (self.queue_order, d.queue);
+                let others: Vec<(u64, SharedString)> = self.queues.iter().filter(|q| q.0 != queue).cloned().collect();
                 // Right-aligned: this column takes the table's slack once a column is resized.
                 h_flex()
                     .w_full()
@@ -524,12 +541,42 @@ impl TableDelegate for DownloadsTable {
                             .xsmall()
                             .icon(IconName::Ellipsis)
                             .tooltip("More actions")
-                            .dropdown_menu(move |menu, _, _| {
+                            .dropdown_menu(move |menu, window, cx| {
                                 let (url, app) = (url.clone(), app2.clone());
+                                let moves = [
+                                    ("Move up", Icon::new(IconName::ArrowUp), Move::Up),
+                                    ("Move down", Icon::new(IconName::ArrowDown), Move::Down),
+                                    ("Move to top", Icon::new(Lucide::ArrowUpToLine), Move::Top),
+                                    ("Move to bottom", Icon::new(Lucide::ArrowDownToLine), Move::Bottom),
+                                ];
                                 menu.item(PopupMenuItem::new("Copy link").icon(IconName::Copy).on_click(
                                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.to_string())),
                                 ))
                                 .separator()
+                                // Order only shows in a queue's own list, so it's only offered there.
+                                .when(queue_order, |menu| {
+                                    moves
+                                        .into_iter()
+                                        .fold(menu, |menu, (label, icon, to)| {
+                                            let app = app.clone();
+                                            menu.item(PopupMenuItem::new(label).icon(icon).on_click(move |_, _, cx| {
+                                                app.update(cx, |this, cx| this.reorder(id, to, cx)).ok();
+                                            }))
+                                        })
+                                        .separator()
+                                })
+                                .when(!others.is_empty(), |menu| {
+                                    let (others, app) = (others.clone(), app.clone());
+                                    menu.submenu("Move to queue", window, cx, move |menu, _, _| {
+                                        others.iter().fold(menu, |menu, (queue, name)| {
+                                            let (app, queue) = (app.clone(), *queue);
+                                            menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
+                                                app.update(cx, |this, cx| this.move_to_queue(id, queue, cx)).ok();
+                                            }))
+                                        })
+                                    })
+                                    .separator()
+                                })
                                 .item(PopupMenuItem::new("Remove from list").icon(IconName::Delete).on_click({
                                     let app = app.clone();
                                     move |_, _, cx| {
@@ -580,6 +627,8 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            queue: crate::queue::MAIN,
+            position: 0,
         }
     }
 

@@ -29,6 +29,8 @@ enum Lookup {
 
 pub enum AddEvent {
     Submit,
+    /// Add it to a queue without starting it.
+    Later,
 }
 
 /// The title-bar link field's state; it renders the panel that drops down below the field.
@@ -202,6 +204,8 @@ impl AddDownload {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            queue: crate::queue::MAIN,
+            position: 0,
         };
         match &self.lookup {
             Lookup::NotNeeded => Err("Enter a link that starts with http:// or https://"),
@@ -388,6 +392,15 @@ impl Render for AddDownload {
                             .ghost()
                             .label("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| this.reset(window, cx))),
+                    )
+                    .child(
+                        Button::new("later")
+                            .small()
+                            .outline()
+                            .label("Download later")
+                            .tooltip("Adds it to the queue on screen, or Main, without starting it")
+                            .disabled(!ready)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(AddEvent::Later))),
                     )
                     .child(
                         Button::new("start")
