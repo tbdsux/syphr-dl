@@ -211,7 +211,7 @@ mod tests {
         assert!(parse(&["notalink"]).is_err());
         assert!(parse(&["--name", "n", "https://a.com/1", "https://a.com/2"]).is_err());
         assert!(parse(&["--help"]).unwrap_err().starts_with("Usage"));
-        assert_eq!(from_scheme("syphr://add?url=ftp://x"), None);
+        assert_eq!(from_scheme("syphr://add?url=file:///x"), None);
         assert_eq!(from_scheme("https://add?url=https://x.com/y"), None);
     }
 

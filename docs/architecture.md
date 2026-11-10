@@ -13,7 +13,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | `src/tools.rs` | Finds and installs yt-dlp and ffmpeg. See [tools.md](tools.md) |
 | `src/ui/app/mod.rs` | `SyphrApp`: the list, selection, filters, and the `pump` that drives jobs |
 | `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, bulk bar |
-| `src/ui/app/details.rs` | The details window a double-clicked row opens, one per download |
+| `src/ui/app/details.rs` | The details window a double-clicked row opens, one per download, with its Log and Options tabs |
 | `src/ui/app/queues.rs` | Queue commands, the scheduler tick, the finish countdown, and the Queues window |
 | `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
@@ -42,6 +42,8 @@ Closing the main window quits Syphr unless a download is running or queued, or w
    - **Everything else** gets a one-byte ranged GET (`engine::inspect`) that reports the file name, size, and whether the server supports byte ranges.
 3. The panel shows the result. You can rename the file, pick a quality, and change the save folder.
 4. *Start download* adds a `Download` with status `Queued` to the top of the list; *Download later* adds it as `Later`, so it waits for its queue to start. Either way it joins the queue shown in the sidebar, or Main, last in that queue's order.
+
+`ftp://` links are accepted too and go through the direct engine.
 
 `kind_for` sorts each download into Video, Music, Document, Program or Archive by extension, which drives the sidebar filters and icons.
 
@@ -90,18 +92,29 @@ When a download ends and its queue has nothing left that is `Downloading`, `Queu
 
 `SyphrApp::pump` runs every 500 ms and is the only place jobs start or stop. It first runs the queue schedules, then goes through the downloads in queue order (`position`, then oldest first):
 
+0. Hand the engine Settings' total speed limit and connections per server, which apply to running downloads too.
 1. Collect a finished job's result: mark it Completed (with its final path and size) or Failed, and notify.
 2. Reconcile status with the job:
    - `Queued`/`Downloading` with no running job and a free slot → start a job (`Request` built from current settings). A slot is free when fewer than *Simultaneous downloads* run in all and fewer than the queue's own limit run in its queue.
    - `Downloading` with no free slot → back to `Queued`.
    - `Paused`/`Failed`/`Completed`/`Missing`/`Later` with a running job → stop it. `Later` never starts on its own.
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
-3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details window draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
+3. Set a running job's speed limit (the download's own, else Settings' limit per download), copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details window draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
 4. After the loop, run the finish action of any queue that just finished (see above).
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
-Settings such as the speed limit and connection count apply to downloads started after the change.
+Speed limits (total, per download, and a download's own) and connections per server apply at once to running direct downloads; yt-dlp gets its limit when it starts. Connections per download, the proxy and logins apply to downloads started after the change.
+
+## The details window
+
+Double-clicking a row opens a window for that download: progress, a strip per part sized by its share of the file, the last minute's speed, and stats. Below them, two tabs:
+
+- **Log** — the download's log, newest first.
+- **Options** — settings for this download alone, saved as they are typed:
+  - *Address* (direct links) with *Refresh*, enabled while the download is paused or failed. See [engine.md](engine.md#refreshing-the-address). The row menu's *Refresh address…* opens this tab.
+  - *Speed limit* in KB/s; empty uses Settings' limit per download, 0 means none. Applies right away.
+  - *Username*, *Password*, *Referer*, *Cookie* and *User agent*, sent with every request of the download (see [engine.md](engine.md#logins-and-headers)). They apply when the download next starts.
 
 ## Statuses
 
@@ -134,6 +147,8 @@ The `queues` table holds each queue's name, schedule (minutes after midnight, a 
 
 Downloads that were running or queued when Syphr quit start again on launch; `Later` ones keep waiting. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
 
+Columns added after the first release (`limit_kbps`, `username`, `password`, `referer`, `cookie`, `user_agent`) are listed in `ADDED_COLUMNS`; `Store::open` adds any an older database lacks with `ALTER TABLE`, so existing lists keep working. The login and header fields are stored as plain text.
+
 ## Settings
 
 Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Support/Syphr` on macOS, `%APPDATA%\Syphr` on Windows, `$XDG_CONFIG_HOME/Syphr` (or `~/.config/Syphr`) on Linux. An unreadable file is ignored (and logged) and defaults are used.
@@ -144,8 +159,11 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 | Font size | 13 (15 on Linux) | 11–20 pt; the whole UI scales in rems. View menu and ⌘= / ⌘- / ⌘0 step it |
 | Download folder | `~/Downloads` | |
 | Max concurrent | 3 | Downloads running at once, across all queues. Each queue can set a lower limit of its own in the Queues window |
-| Speed limit | 0 (unlimited) | KB/s, shared across one download's connections |
+| Total speed limit | 0 (unlimited) | KB/s, shared by all running downloads |
+| Speed limit per download | 0 (unlimited) | KB/s, for downloads without their own limit (details window → Options) |
 | Connections | 8 | Byte-range parts for direct links, `-N` for yt-dlp |
+| Connections per server | 0 (unlimited) | Direct-download connections to one host across all downloads |
+| Logins | | Site, username and password, used for that site and its subdomains when a download has no login of its own; passwords are stored as plain text. See [engine.md](engine.md#logins-and-headers) |
 | Proxy | None | Type, host, port, username, password for all traffic; the password is stored as plain text. See [engine.md](engine.md#proxy) |
 | yt-dlp / ffmpeg path | `yt-dlp` / `ffmpeg` | Bare names are searched; see [tools.md](tools.md) |
 | Preferred video codec | No preference | H.264, VP9 or AV1 is picked first at each resolution |

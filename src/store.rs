@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use chrono::{NaiveDate, NaiveTime, Timelike};
 
 use crate::download::{Download, Kind, Source, Status};
+use crate::engine::Access;
 use crate::queue::{Finish, MAIN, Queue};
 
 const SCHEMA: &str = "
@@ -52,6 +53,16 @@ ALTER TABLE downloads ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 UPDATE downloads SET position = id;
 ";
 
+/// Columns added since the table was first created; `open` adds the ones an older database lacks.
+const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("limit_kbps", "INTEGER"),
+    ("username", "TEXT"),
+    ("password", "TEXT"),
+    ("referer", "TEXT"),
+    ("cookie", "TEXT"),
+    ("user_agent", "TEXT"),
+];
+
 /// The download list and each download's log, in `downloads.db` in Syphr's folder.
 pub struct Store {
     conn: Connection,
@@ -81,6 +92,13 @@ impl Store {
         if !has_queue {
             conn.execute_batch(&format!("BEGIN;{ADD_QUEUES}COMMIT;"))?;
         }
+        let have: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('downloads')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, kind) in ADDED_COLUMNS.iter().filter(|(name, _)| !have.iter().any(|h| h == name)) {
+            conn.execute_batch(&format!("ALTER TABLE downloads ADD COLUMN {name} {kind}"))?;
+        }
         Ok(Self { conn, saved: HashMap::new() })
     }
 
@@ -88,7 +106,7 @@ impl Store {
     pub fn load(&mut self) -> rusqlite::Result<Vec<Download>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                    file_name, path, queue, position
+                    file_name, path, queue, position, limit_kbps, username, password, referer, cookie, user_agent
              FROM downloads ORDER BY id DESC",
         )?;
         let downloads = stmt
@@ -112,6 +130,14 @@ impl Store {
                     speed_history: Vec::new(),
                     queue: r.get(13)?,
                     position: r.get(14)?,
+                    limit_kbps: r.get(15)?,
+                    access: Access {
+                        username: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                        password: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                        referer: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+                        cookie: r.get::<_, Option<String>>(19)?.unwrap_or_default(),
+                        user_agent: r.get::<_, Option<String>>(20)?.unwrap_or_default(),
+                    },
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -147,8 +173,8 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO downloads
                  (id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                  file_name, path, queue, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                  file_name, path, queue, position, limit_kbps, username, password, referer, cookie, user_agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     d.id,
                     d.name.as_ref(),
@@ -165,6 +191,12 @@ impl Store {
                     d.path.as_ref().map(|p| p.to_string_lossy()),
                     d.queue,
                     d.position,
+                    d.limit_kbps,
+                    d.access.username,
+                    d.access.password,
+                    d.access.referer,
+                    d.access.cookie,
+                    d.access.user_agent,
                 ],
             )?;
             let before = self.saved.get(&d.id).map(|s| s.status);
@@ -269,6 +301,7 @@ fn same(a: &Download, b: &Download) -> bool {
     (&a.name, &a.url, a.kind, a.status, a.total_bytes, a.received_bytes, &a.folder, &a.format, &a.path)
         == (&b.name, &b.url, b.kind, b.status, b.total_bytes, b.received_bytes, &b.folder, &b.format, &b.path)
         && (a.queue, a.position) == (b.queue, b.position)
+        && (a.limit_kbps, &a.access) == (b.limit_kbps, &b.access)
 }
 
 fn status_key(s: Status) -> &'static str {
@@ -335,8 +368,10 @@ mod tests {
             selector: Some("bv*".into()),
             file_name: None,
             path: Some("/tmp/1.mp4".into()),
-            fragments: vec![0.5],
+            fragments: vec![(1., 0.5)],
             speed_history: Vec::new(),
+            limit_kbps: None,
+            access: Default::default(),
             queue: crate::queue::MAIN,
             position: 0,
         }
@@ -414,6 +449,37 @@ mod tests {
         let d = &reopened.load().unwrap()[0];
         assert_eq!((d.id, d.status, d.queue), (8, Status::Later, 2));
         drop((store, reopened));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn adds_new_columns_to_an_old_database() {
+        let dir = std::env::temp_dir().join(format!("syphr-store-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("downloads.db");
+        let _ = std::fs::remove_file(&path);
+        // The table as the first release made it.
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        old.execute(
+            "INSERT INTO downloads (id, name, url, kind, source, status, received_bytes, folder)
+             VALUES (1, 'a.zip', 'https://a.com/a.zip', 'archive', 'direct', 'paused', 5, '~/Downloads')",
+            [],
+        )
+        .unwrap();
+        drop(old);
+
+        let mut store = Store::open(&path).unwrap();
+        let mut list = store.load().unwrap();
+        assert_eq!((list[0].id, list[0].status, list[0].limit_kbps), (1, Status::Paused, None));
+        list[0].limit_kbps = Some(250);
+        list[0].access.username = "me".into();
+        list[0].access.cookie = "a=1".into();
+        store.sync(&list);
+        drop(store);
+        let loaded = Store::open(&path).unwrap().load().unwrap();
+        assert_eq!(loaded[0].limit_kbps, Some(250));
+        assert_eq!(loaded[0].access, Access { username: "me".into(), cookie: "a=1".into(), ..Default::default() });
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

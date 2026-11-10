@@ -32,16 +32,22 @@ pub struct AppSettings {
     pub font_size: f64,
     pub download_dir: String,
     pub max_concurrent: f64,
-    /// 0 means unlimited.
+    /// Each download's limit unless it sets its own; 0 means unlimited.
     pub speed_limit_kbps: f64,
+    /// All downloads together; 0 means unlimited.
+    pub total_limit_kbps: f64,
     /// Parallel connections per download: byte-range parts for direct links, `-N` for yt-dlp.
     pub fragments: f64,
+    /// Direct-download connections to one server across all downloads; 0 means no limit.
+    pub per_server: f64,
     /// URL scheme of the proxy for all of Syphr's traffic, or `PROXY_NONE`.
     pub proxy_type: String,
     pub proxy_host: String,
     pub proxy_port: f64,
     pub proxy_username: String,
     pub proxy_password: String,
+    /// Used for a site's links when the download has no login of its own; passwords are plain text.
+    pub site_logins: Vec<SiteLogin>,
     pub ytdlp_path: String,
     /// yt-dlp needs it to merge separate video and audio streams.
     pub ffmpeg_path: String,
@@ -67,6 +73,15 @@ pub struct AppSettings {
 
 impl Global for AppSettings {}
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteLogin {
+    /// A host such as example.com; its subdomains match too.
+    pub site: String,
+    pub username: String,
+    pub password: String,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -76,12 +91,15 @@ impl Default for AppSettings {
             download_dir: home().join("Downloads").display().to_string(),
             max_concurrent: 3.,
             speed_limit_kbps: 0.,
+            total_limit_kbps: 0.,
             fragments: 8.,
+            per_server: 0.,
             proxy_type: PROXY_NONE.into(),
             proxy_host: String::new(),
             proxy_port: 8080.,
             proxy_username: String::new(),
             proxy_password: String::new(),
+            site_logins: Vec::new(),
             ytdlp_path: "yt-dlp".into(),
             ffmpeg_path: "ffmpeg".into(),
             ytdlp_codec: "any".into(),
@@ -159,6 +177,10 @@ impl AppSettings {
             url.set_password(Some(&self.proxy_password)).map_err(|_| invalid())?;
         }
         Ok(url.to_string())
+    }
+
+    pub fn site_logins(&self) -> Vec<(String, String, String)> {
+        self.site_logins.iter().map(|l| (l.site.clone(), l.username.clone(), l.password.clone())).collect()
     }
 
     pub fn ytdlp_options(&self) -> crate::engine::ytdlp::Options {
@@ -342,6 +364,63 @@ fn update_proxy(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
     crate::engine::set_proxy(AppSettings::get(cx).proxy_url());
 }
 
+fn update_logins(cx: &mut App, edit: impl FnOnce(&mut Vec<SiteLogin>)) {
+    AppSettings::update(cx, |s| edit(&mut s.site_logins));
+    crate::engine::set_site_logins(AppSettings::get(cx).site_logins());
+}
+
+/// Key, placeholder, value, and how to save it.
+type LoginField = (&'static str, &'static str, String, fn(&mut SiteLogin, String));
+
+/// One saved login: site, username and password, each saved as it is typed.
+fn site_login_field(ix: usize) -> SettingField<SharedString> {
+    SettingField::render(move |_, window, cx| {
+        let login = AppSettings::get(cx).site_logins.get(ix).cloned().unwrap_or_default();
+        let fields: [LoginField; 3] = [
+            ("site", "example.com", login.site, |l, v| l.site = v),
+            ("username", "Username", login.username, |l, v| l.username = v),
+            ("password", "Password", login.password, |l, v| l.password = v),
+        ];
+        let inputs = fields.map(|(key, placeholder, value, set)| {
+            let value: SharedString = value.into();
+            let input = window.use_keyed_state(SharedString::from(format!("login-{key}-{ix}")), cx, |window, cx| {
+                cx.subscribe_self(move |input: &mut InputState, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let value = input.value().to_string();
+                        update_logins(cx, |logins| {
+                            if let Some(login) = logins.get_mut(ix) {
+                                set(login, value);
+                            }
+                        });
+                    }
+                })
+                .detach();
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .masked(key == "password")
+                    .default_value(value.clone())
+            });
+            // Rows shift up when one above is removed.
+            if input.read(cx).value() != value {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+            let field = Input::new(&input).aria_label(placeholder).flex_1();
+            if key == "password" { field.mask_toggle() } else { field }
+        });
+        h_flex().w_full().gap_2().children(inputs).child(
+            Button::new(("remove-login", ix)).ghost().icon(IconName::Delete).tooltip("Remove login").on_click(
+                move |_, _, cx| {
+                    update_logins(cx, |logins| {
+                        if ix < logins.len() {
+                            logins.remove(ix);
+                        }
+                    })
+                },
+            ),
+        )
+    })
+}
+
 fn update_ytdlp(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
     AppSettings::update(cx, edit);
     crate::engine::ytdlp::set_options(AppSettings::get(cx).ytdlp_options());
@@ -489,7 +568,17 @@ impl Render for SettingsView {
                 )
                 .description("Others wait in the queue."),
                 SettingItem::new(
-                    "Speed limit (KB/s)",
+                    "Total speed limit (KB/s)",
+                    SettingField::number_input(
+                        number(0., 1_000_000., 100.),
+                        |cx: &App| AppSettings::get(cx).total_limit_kbps,
+                        |value: f64, cx: &mut App| AppSettings::update(cx, |s| s.total_limit_kbps = value),
+                    )
+                    .default_value(defaults.total_limit_kbps),
+                )
+                .description("Shared by all running downloads. 0 means no limit."),
+                SettingItem::new(
+                    "Speed limit per download (KB/s)",
                     SettingField::number_input(
                         number(0., 1_000_000., 100.),
                         |cx: &App| AppSettings::get(cx).speed_limit_kbps,
@@ -497,7 +586,7 @@ impl Render for SettingsView {
                     )
                     .default_value(defaults.speed_limit_kbps),
                 )
-                .description("Shared by all downloads. 0 means no limit."),
+                .description("For each download that doesn't set its own in its details window. 0 means no limit."),
                 SettingItem::new(
                     "Connections per download",
                     SettingField::number_input(
@@ -510,6 +599,16 @@ impl Render for SettingsView {
                 .description(
                     "Parts fetched at once. Servers without range support always use one. Applies to new downloads.",
                 ),
+                SettingItem::new(
+                    "Connections per server",
+                    SettingField::number_input(
+                        number(0., 64., 1.),
+                        |cx: &App| AppSettings::get(cx).per_server,
+                        |value: f64, cx: &mut App| AppSettings::update(cx, |s| s.per_server = value),
+                    )
+                    .default_value(defaults.per_server),
+                )
+                .description("Counts every download's connections to the same site. 0 means no limit."),
                 SettingItem::new(
                     "Notify when a download finishes",
                     SettingField::switch(
@@ -651,6 +750,28 @@ impl Render for SettingsView {
                     .description("Used for downloads, tool installs and update checks. Applies to new downloads.")
                     .items(proxy_items),
             );
+
+        let mut login_items: Vec<SettingItem> = (0..AppSettings::get(cx).site_logins.len())
+            .map(|ix| SettingItem::new(format!("Login {}", ix + 1), site_login_field(ix)).layout(Axis::Vertical))
+            .collect();
+        login_items.push(SettingItem::new(
+            "New login",
+            SettingField::render(|_, _, _| {
+                Button::new("add-login")
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("Add")
+                    .on_click(|_, _, cx| update_logins(cx, |logins| logins.push(SiteLogin::default())))
+            }),
+        ));
+        let logins = SettingPage::new("Logins").icon(IconName::CircleUser).resettable(false).group(
+            SettingGroup::new()
+                .description(
+                    "Sent as HTTP Basic to a site and its subdomains, and to yt-dlp, when a download has no login of \
+                     its own. Passwords are saved unencrypted in Syphr's settings file.",
+                )
+                .items(login_items),
+        );
 
         let ytdlp = SettingPage::new("YouTube & sites").icon(IconName::Globe).resettable(true).group(
             SettingGroup::new().items([
@@ -858,7 +979,7 @@ impl Render for SettingsView {
             div().flex_1().min_h_0().child(
                 Settings::new("settings")
                     .sidebar_width(cx.theme().font_size * 18.)
-                    .pages([appearance, downloads, proxy, ytdlp, updates, shortcuts, about]),
+                    .pages([appearance, downloads, proxy, logins, ytdlp, updates, shortcuts, about]),
             ),
         )
     }

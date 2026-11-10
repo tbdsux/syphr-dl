@@ -16,7 +16,7 @@ pub const DEFAULT_TYPES: &str = "3gp 7z aac apk appimage avi bz2 deb dmg epub ex
      mp4 mpeg mpg msi ogg opus pdf pkg rar rpm tar tgz wav webm wma wmv xz zip zst";
 
 pub fn is_web_link(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://")) && url.len() > "https://".len()
+    ["http://", "https://", "ftp://"].iter().any(|scheme| url.len() > scheme.len() && url.starts_with(scheme))
 }
 
 /// The web links in `text`, one or more per line, in order and without repeats; lines starting with `#` are comments.
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn parses_link_lists() {
         let text = "# my links\nhttps://a.com/1.zip\n\n  https://a.com/2.zip  not-a-link https://a.com/3.zip\n\
-                    #https://a.com/skipped.zip\nftp://a.com/x\nhttps://a.com/1.zip\n";
+                    #https://a.com/skipped.zip\nfile:///x\nhttps://a.com/1.zip\n";
         assert_eq!(parse_list(text), ["https://a.com/1.zip", "https://a.com/2.zip", "https://a.com/3.zip"]);
         assert!(parse_list("").is_empty());
     }

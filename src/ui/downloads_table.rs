@@ -270,19 +270,23 @@ fn progress_wash(d: &Download, cx: &App) -> Vec<Div> {
     let edge = if d.fragments.is_empty() {
         edge.child(div().h_full().bg(color).w(relative(share)))
     } else {
-        edge.gap_px().children(d.fragments.iter().map(|&f| {
-            div().flex_1().h_full().bg(color.opacity(0.25)).child(div().h_full().bg(color).w(relative(f.clamp(0., 1.))))
+        edge.gap_px().children(d.fragments.iter().map(|&(share, f)| {
+            div()
+                .flex_basis(relative(share))
+                .h_full()
+                .bg(color.opacity(0.25))
+                .child(div().h_full().bg(color).w(relative(f.clamp(0., 1.))))
         }))
     };
     vec![div().absolute().top_0().bottom_0().left_0().w(relative(share)).bg(color.opacity(0.12)), edge]
 }
 
-/// One segment per parallel part, in file order, so stalled connections stand out.
+/// One segment per part, in file order and sized by its range, so stalled connections stand out.
 pub fn fragment_strip(d: &Download, height: Rems, cx: &App) -> Div {
     let (color, track) = (progress_color(d.status, cx), cx.theme().secondary);
-    h_flex().gap_px().children(d.fragments.iter().map(|f| {
+    h_flex().gap_px().children(d.fragments.iter().map(|&(share, f)| {
         div()
-            .flex_1()
+            .flex_basis(relative(share))
             .h(height)
             .rounded_full()
             .bg(track)
@@ -522,6 +526,7 @@ impl TableDelegate for DownloadsTable {
                 let (label, icon, next) = next_step(d.status);
                 let (app, app2) = (self.app.clone(), self.app.clone());
                 let (url, saved) = (d.url.clone(), d.path.is_some());
+                let refreshable = d.source == Source::Direct && matches!(d.status, Status::Paused | Status::Failed);
                 let (queue_order, queue) = (self.queue_order, d.queue);
                 let others: Vec<(u64, SharedString)> = self.queues.iter().filter(|q| q.0 != queue).cloned().collect();
                 // Right-aligned: this column takes the table's slack once a column is resized.
@@ -552,6 +557,16 @@ impl TableDelegate for DownloadsTable {
                                 menu.item(PopupMenuItem::new("Copy link").icon(IconName::Copy).on_click(
                                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.to_string())),
                                 ))
+                                .when(refreshable, |menu| {
+                                    let app = app.clone();
+                                    menu.item(
+                                        PopupMenuItem::new("Refresh address…").icon(IconName::RefreshCw).on_click(
+                                            move |_, _, cx| {
+                                                app.update(cx, |this, cx| this.open_refresh_address(id, cx)).ok();
+                                            },
+                                        ),
+                                    )
+                                })
                                 .separator()
                                 // Order only shows in a queue's own list, so it's only offered there.
                                 .when(queue_order, |menu| {
@@ -627,6 +642,8 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            limit_kbps: None,
+            access: Default::default(),
             queue: crate::queue::MAIN,
             position: 0,
         }

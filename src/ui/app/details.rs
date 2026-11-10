@@ -1,30 +1,50 @@
 //! The details window for one download, opened by double-clicking its row.
 
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar,
+    ActiveTheme, Disableable, IconName, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants},
     chart::AreaChart,
+    form::{Field, Form},
     h_flex,
+    input::{Input, InputEvent, InputState},
     progress::Progress,
     scroll::ScrollableElement as _,
+    tab::{Tab, TabBar},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SyphrApp;
-use crate::download::{SPEED_SAMPLES, format_bytes, format_duration};
+use crate::download::{Download, SPEED_SAMPLES, Source, Status, format_bytes, format_duration};
+use crate::engine::{self, Access};
 use crate::ui::downloads_table::{
     eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text, status_label,
 };
+use crate::ui::settings::AppSettings;
 
 impl SyphrApp {
     /// One window per download; a second double-click brings the open one forward.
     pub fn open_details(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(handle) = self.details.get(&id)
+        self.open_details_on(id, LOG_TAB, cx);
+    }
+
+    /// Opens the details window on its Options tab, where the address can be replaced.
+    pub fn open_refresh_address(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.open_details_on(id, OPTIONS_TAB, cx);
+    }
+
+    fn open_details_on(&mut self, id: u64, tab: usize, cx: &mut Context<Self>) {
+        if let Some((handle, view)) = self.details.get(&id)
             && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
         {
+            if tab != LOG_TAB {
+                view.update(cx, |view, cx| {
+                    view.tab = tab;
+                    cx.notify();
+                })
+                .ok();
+            }
             return;
         }
         let app = cx.entity();
@@ -36,26 +56,127 @@ impl SyphrApp {
                 ..TitleBar::window_options()
             };
             let view = app.clone();
-            if let Ok((handle, _)) =
-                gpui_kit::open_window(options, cx, |_, cx| cx.new(|cx| DownloadDetails::new(view, id, cx)))
-            {
-                app.update(cx, |this, _| this.details.insert(id, handle));
+            if let Ok((handle, view)) = gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| DownloadDetails::new(view, id, tab, window, cx))
+            }) {
+                app.update(cx, |this, _| this.details.insert(id, (handle, view.downgrade())));
             }
         });
     }
+
+    /// Changes one download and saves the list.
+    pub fn edit_download(&mut self, id: u64, edit: impl FnOnce(&mut Download), cx: &mut Context<Self>) {
+        if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+            edit(d);
+            self.sync_table(cx);
+        }
+    }
+
+    /// Points a paused or failed direct download at a new link for the same file, so it resumes from its parts.
+    /// The link must serve the same size with byte ranges; otherwise nothing changes and the window says why.
+    pub fn refresh_address(&mut self, id: u64, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
+        let (total, access, probe) = (d.total_bytes, d.access.clone(), url.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let info = match engine::RUNTIME.spawn(async move { engine::inspect(&probe, &access).await }).await {
+                Ok(result) => result,
+                Err(e) => Err(e.to_string()),
+            };
+            let outcome = match info {
+                Err(e) => Err(format!("Couldn't check the new address: {e}")),
+                Ok(info) if !info.ranged => {
+                    Err("The new address doesn't support resuming, so the download can't continue from it.".into())
+                }
+                Ok(info) if total.is_some() && info.total != total => Err(format!(
+                    "The new address serves a different file ({} instead of {}).",
+                    info.total.map(format_bytes).unwrap_or_else(|| "unknown size".into()),
+                    total.map(format_bytes).unwrap_or_default(),
+                )),
+                Ok(info) => Ok(info.summary),
+            };
+            this.update_in(cx, |this, window, cx| match outcome {
+                Ok(summary) => {
+                    this.store.log(id, &format!("Address changed to {url} {summary}"));
+                    this.edit_download(id, |d| d.url = url.into(), cx);
+                    window.push_notification("Address updated. Resume to continue the download.", cx);
+                }
+                Err(message) => window.push_notification(message, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
+
+const LOG_TAB: usize = 0;
+const OPTIONS_TAB: usize = 1;
 
 pub struct DownloadDetails {
     app: WeakEntity<SyphrApp>,
     id: u64,
-    show_log: bool,
-    _observe: Subscription,
+    tab: usize,
+    /// A replacement link; see `SyphrApp::refresh_address`.
+    address: Entity<InputState>,
+    /// KB/s; empty uses Settings' limit.
+    limit: Entity<InputState>,
+    /// Login and header fields, each with its label.
+    access: Vec<(&'static str, Entity<InputState>)>,
+    _subscriptions: Vec<Subscription>,
 }
 
+type AccessField = (&'static str, fn(&Access) -> &String, fn(&mut Access, String));
+
+const ACCESS_FIELDS: [AccessField; 5] = [
+    ("Username", |a| &a.username, |a, v| a.username = v),
+    ("Password", |a| &a.password, |a, v| a.password = v),
+    ("Referer", |a| &a.referer, |a, v| a.referer = v),
+    ("Cookie", |a| &a.cookie, |a, v| a.cookie = v),
+    ("User agent", |a| &a.user_agent, |a, v| a.user_agent = v),
+];
+
 impl DownloadDetails {
-    fn new(app: Entity<SyphrApp>, id: u64, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&app, |_, _, cx| cx.notify());
-        Self { app: app.downgrade(), id, show_log: true, _observe: observe }
+    fn new(app: Entity<SyphrApp>, id: u64, tab: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let d = app.read(cx).downloads.iter().find(|d| d.id == id).cloned();
+        let url = d.as_ref().map(|d| d.url.clone()).unwrap_or_default();
+        let address = cx.new(|cx| InputState::new(window, cx).default_value(url));
+        let limit = d.as_ref().and_then(|d| d.limit_kbps).map(|l| l.to_string()).unwrap_or_default();
+        let limit = cx.new(|cx| InputState::new(window, cx).placeholder("Default").default_value(limit));
+        let mut subscriptions = vec![
+            cx.observe(&app, |_, _, cx| cx.notify()),
+            cx.observe(&address, |_, _, cx| cx.notify()),
+            cx.subscribe(&limit, |this, input, event: &InputEvent, cx| {
+                if let (InputEvent::Change, Some(limit)) = (event, parse_limit(&input.read(cx).value())) {
+                    let id = this.id;
+                    this.app.update(cx, |app, cx| app.edit_download(id, |d| d.limit_kbps = limit, cx)).ok();
+                }
+            }),
+        ];
+        let saved = d.map(|d| d.access).unwrap_or_default();
+        let access = ACCESS_FIELDS
+            .iter()
+            .map(|&(label, get, set)| {
+                let value = get(&saved).clone();
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx).masked(label == "Password").placeholder("None").default_value(value)
+                });
+                subscriptions.push(cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let (id, value) = (this.id, input.read(cx).value().to_string());
+                        this.app.update(cx, |app, cx| app.edit_download(id, |d| set(&mut d.access, value), cx)).ok();
+                    }
+                }));
+                (label, input)
+            })
+            .collect();
+        Self { app: app.downgrade(), id, tab, address, limit, access, _subscriptions: subscriptions }
+    }
+}
+
+/// None when the text isn't a limit; Some(None) when empty, which means Settings' limit.
+fn parse_limit(text: &str) -> Option<Option<u64>> {
+    match text.trim() {
+        "" => Some(None),
+        text => text.parse().ok().map(Some),
     }
 }
 
@@ -142,18 +263,6 @@ impl DownloadDetails {
                                 },
                             ))
                             .child(
-                                Button::new("detail-log")
-                                    .small()
-                                    .ghost()
-                                    .icon(Icon::new(Lucide::ScrollText))
-                                    .selected(self.show_log)
-                                    .tooltip(if self.show_log { "Hide log" } else { "Show log" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.show_log = !this.show_log;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
                                 Button::new("detail-copy")
                                     .small()
                                     .ghost()
@@ -181,7 +290,7 @@ impl DownloadDetails {
                 this.child(
                     v_flex()
                         .gap_1()
-                        .child(div().text_xs().text_color(muted).child(format!("{} connections", d.fragments.len())))
+                        .child(div().text_xs().text_color(muted).child(format!("{} parts", d.fragments.len())))
                         .child(fragment_strip(d, rems(0.5), cx)),
                 )
             })
@@ -225,7 +334,22 @@ impl DownloadDetails {
                     ))
                     .child(stat("Save to", text(d.folder.to_string()))),
             )
-            .when(self.show_log, |this| {
+            .child(
+                TabBar::new("detail-tabs")
+                    .underline()
+                    .small()
+                    .selected_index(self.tab)
+                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        this.tab = *ix;
+                        cx.notify();
+                    }))
+                    .child(Tab::new().label("Log"))
+                    .child(Tab::new().label("Options")),
+            )
+            .map(|this| {
+                if self.tab != LOG_TAB {
+                    return this.child(self.render_options(d, cx));
+                }
                 // Newest first, so a running download's latest line is in view without scrolling.
                 this.child(
                     v_flex()
@@ -248,5 +372,61 @@ impl DownloadDetails {
                         })),
                 )
             })
+    }
+
+    fn render_options(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
+        let address = self.address.read(cx).value().trim().to_string();
+        let can_refresh = d.source == Source::Direct && matches!(d.status, Status::Paused | Status::Failed);
+        let (app, id, muted) = (self.app.clone(), self.id, cx.theme().muted_foreground);
+        let default = match AppSettings::get(cx).speed_limit_kbps as u64 {
+            0 => "no limit".to_string(),
+            kbps => format!("{kbps} KB/s"),
+        };
+        let limit_help = match parse_limit(&self.limit.read(cx).value()) {
+            Some(_) => format!("Empty uses the default from Settings ({default}). 0 means no limit."),
+            None => "Enter a whole number of KB/s.".into(),
+        };
+        v_flex().flex_1().min_h(rems(6.)).overflow_y_scrollbar().child(
+            Form::new()
+                .when(d.source == Source::Direct, |this| {
+                    this.child(
+                        Field::new()
+                            .label("Address")
+                            .description(if can_refresh {
+                                "Paste a fresh link to the same file, such as a new expiring link, then refresh."
+                            } else {
+                                "Pause the download to change its address."
+                            })
+                            .child(
+                                h_flex().gap_2().child(Input::new(&self.address).small().flex_1()).child(
+                                    Button::new("refresh-address")
+                                        .small()
+                                        .outline()
+                                        .label("Refresh")
+                                        .disabled(!can_refresh || address.is_empty() || address == *d.url)
+                                        .on_click(move |_, window, cx| {
+                                            let url = address.clone();
+                                            app.update(cx, |this, cx| this.refresh_address(id, url, window, cx)).ok();
+                                        }),
+                                ),
+                            ),
+                    )
+                })
+                .child(
+                    Field::new()
+                        .label("Speed limit (KB/s)")
+                        .description(limit_help)
+                        .child(Input::new(&self.limit).small()),
+                )
+                .children(self.access.iter().map(|(label, input)| {
+                    let field = Input::new(input).small();
+                    let field = if *label == "Password" { field.mask_toggle() } else { field };
+                    Field::new().label(*label).child(field)
+                }))
+                .child(Field::new().child(div().text_xs().text_color(muted).child(
+                    "The login goes out as HTTP Basic, or to yt-dlp. Empty fields use the link's own login or a \
+                     saved one from Settings → Logins. Changes apply when the download next starts.",
+                ))),
+        )
     }
 }
