@@ -162,7 +162,7 @@ impl AddDownload {
                 cx.background_spawn(probe).await.map(Lookup::Ready)
             } else {
                 // reqwest needs the tokio runtime; the handle is awaited from here.
-                match engine::RUNTIME.spawn(async move { engine::inspect(&url).await }).await {
+                match engine::RUNTIME.spawn(async move { engine::inspect(&url, &Default::default()).await }).await {
                     Ok(result) => result.map(Lookup::File),
                     Err(e) => Err(e.to_string()),
                 }
@@ -203,6 +203,7 @@ impl AddDownload {
             fragments: Vec::new(),
             speed_history: Vec::new(),
             limit_kbps: None,
+            access: Default::default(),
         };
         match &self.lookup {
             Lookup::NotNeeded => Err("Enter a link that starts with http:// or https://"),

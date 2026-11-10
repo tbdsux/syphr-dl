@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path, time::SystemTime};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::download::{Download, Kind, Source, Status};
+use crate::engine::Access;
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -32,7 +33,14 @@ CREATE INDEX IF NOT EXISTS log_download ON log (download_id);
 ";
 
 /// Columns added since the table was first created; `open` adds the ones an older database lacks.
-const ADDED_COLUMNS: &[(&str, &str)] = &[("limit_kbps", "INTEGER")];
+const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("limit_kbps", "INTEGER"),
+    ("username", "TEXT"),
+    ("password", "TEXT"),
+    ("referer", "TEXT"),
+    ("cookie", "TEXT"),
+    ("user_agent", "TEXT"),
+];
 
 /// The download list and each download's log, in `downloads.db` in Syphr's folder.
 pub struct Store {
@@ -69,7 +77,7 @@ impl Store {
     pub fn load(&mut self) -> rusqlite::Result<Vec<Download>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                    file_name, path, limit_kbps
+                    file_name, path, limit_kbps, username, password, referer, cookie, user_agent
              FROM downloads ORDER BY id DESC",
         )?;
         let downloads = stmt
@@ -92,6 +100,13 @@ impl Store {
                     fragments: Vec::new(),
                     speed_history: Vec::new(),
                     limit_kbps: r.get(13)?,
+                    access: Access {
+                        username: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
+                        password: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                        referer: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                        cookie: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                        user_agent: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+                    },
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -127,8 +142,8 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO downloads
                  (id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                  file_name, path, limit_kbps)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                  file_name, path, limit_kbps, username, password, referer, cookie, user_agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     d.id,
                     d.name.as_ref(),
@@ -144,6 +159,11 @@ impl Store {
                     d.file_name,
                     d.path.as_ref().map(|p| p.to_string_lossy()),
                     d.limit_kbps,
+                    d.access.username,
+                    d.access.password,
+                    d.access.referer,
+                    d.access.cookie,
+                    d.access.user_agent,
                 ],
             )?;
             let before = self.saved.get(&d.id).map(|s| s.status);
@@ -194,7 +214,7 @@ fn append(conn: &Connection, id: u64, message: &str) -> rusqlite::Result<usize> 
 fn same(a: &Download, b: &Download) -> bool {
     (&a.name, &a.url, a.kind, a.status, a.total_bytes, a.received_bytes, &a.folder, &a.format, &a.path)
         == (&b.name, &b.url, b.kind, b.status, b.total_bytes, b.received_bytes, &b.folder, &b.format, &b.path)
-        && a.limit_kbps == b.limit_kbps
+        && (a.limit_kbps, &a.access) == (b.limit_kbps, &b.access)
 }
 
 fn status_key(s: Status) -> &'static str {
@@ -262,6 +282,7 @@ mod tests {
             fragments: vec![(1., 0.5)],
             speed_history: Vec::new(),
             limit_kbps: None,
+            access: Default::default(),
         }
     }
 
@@ -318,10 +339,13 @@ mod tests {
         let mut list = store.load().unwrap();
         assert_eq!((list[0].id, list[0].status, list[0].limit_kbps), (1, Status::Paused, None));
         list[0].limit_kbps = Some(250);
+        list[0].access.username = "me".into();
+        list[0].access.cookie = "a=1".into();
         store.sync(&list);
         drop(store);
         let loaded = Store::open(&path).unwrap().load().unwrap();
         assert_eq!(loaded[0].limit_kbps, Some(250));
+        assert_eq!(loaded[0].access, Access { username: "me".into(), cookie: "a=1".into(), ..Default::default() });
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -108,6 +108,91 @@ pub fn set_total_limit(bps: u64) {
     TOTAL_LIMIT.set(bps);
 }
 
+/// Saved logins as (site, username, password); a site also covers its subdomains.
+static SITE_LOGINS: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new());
+
+/// Applies to requests made from now on, like `set_proxy`.
+pub fn set_site_logins(logins: Vec<(String, String, String)>) {
+    *SITE_LOGINS.write().unwrap() = logins;
+}
+
+/// A download's login and extra headers, sent with the probe and every part request. Empty fields aren't sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    pub username: String,
+    pub password: String,
+    pub referer: String,
+    pub cookie: String,
+    pub user_agent: String,
+}
+
+impl Access {
+    /// The download's own login, else the one in the link (`user:pass@`), else one saved for the link's site.
+    fn login(&self, url: &str) -> Option<(String, String)> {
+        if !self.username.is_empty() {
+            return Some((self.username.clone(), self.password.clone()));
+        }
+        let url = reqwest::Url::parse(url).ok()?;
+        if !url.username().is_empty() {
+            let password = url.password().map(names::percent_decode).unwrap_or_default();
+            return Some((names::percent_decode(url.username()), password));
+        }
+        let host = url.host_str()?.to_ascii_lowercase();
+        SITE_LOGINS
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(site, ..)| {
+                let site = site_host(site);
+                !site.is_empty() && (host == site || host.ends_with(&format!(".{site}")))
+            })
+            .map(|(_, username, password)| (username.clone(), password.clone()))
+    }
+
+    /// A GET with the login as HTTP Basic and the extra headers.
+    fn get(&self, url: &str) -> Result<reqwest::RequestBuilder, String> {
+        let mut req = client()?.get(url);
+        if let Some((username, password)) = self.login(url) {
+            req = req.basic_auth(username, Some(password));
+        }
+        for (name, value) in [
+            (reqwest::header::REFERER, &self.referer),
+            (reqwest::header::COOKIE, &self.cookie),
+            (reqwest::header::USER_AGENT, &self.user_agent),
+        ] {
+            if !value.trim().is_empty() {
+                req = req.header(name, value.trim());
+            }
+        }
+        Ok(req)
+    }
+
+    /// The login and headers as yt-dlp options.
+    fn ytdlp_args(&self, url: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some((username, password)) = self.login(url) {
+            args.extend(["--username".into(), username, "--password".into(), password]);
+        }
+        if !self.referer.trim().is_empty() {
+            args.extend(["--referer".into(), self.referer.trim().into()]);
+        }
+        for (name, value) in [("Cookie", &self.cookie), ("User-Agent", &self.user_agent)] {
+            if !value.trim().is_empty() {
+                args.extend(["--add-header".into(), format!("{name}:{}", value.trim())]);
+            }
+        }
+        args
+    }
+}
+
+/// `example.com` from a saved site, even if it was pasted as a link.
+fn site_host(site: &str) -> String {
+    let site = site.trim().to_ascii_lowercase();
+    let site = site.split_once("://").map_or(site.as_str(), |(_, rest)| rest);
+    let site = site.split(['/', '?', '#']).next().unwrap_or_default();
+    site.rsplit_once('@').map_or(site, |(_, host)| host).trim_start_matches("*.").to_string()
+}
+
 #[derive(Clone)]
 pub struct Request {
     /// The download's id; its unfinished files live under it.
@@ -124,6 +209,7 @@ pub struct Request {
     pub limit_bps: u64,
     /// Parallel connections; servers that don't support ranges get one.
     pub fragments: u64,
+    pub access: Access,
 }
 
 #[derive(Default)]
@@ -474,6 +560,7 @@ mod tests {
             ffmpeg_bin: "no-such-ffmpeg".into(),
             limit_bps: 0,
             fragments: 8,
+            access: Access::default(),
         });
         let result = loop {
             std::thread::sleep(Duration::from_millis(20));
@@ -501,6 +588,7 @@ mod offline {
             ffmpeg_bin: String::new(),
             limit_bps: 0,
             fragments: 2,
+            access: Access::default(),
         }
     }
 
@@ -535,6 +623,53 @@ mod offline {
         assert_eq!(seen.lock().unwrap().len(), parts + 1, "one probe and one request per part");
         assert_eq!(job.received(), total);
         assert!(job.fragments().iter().all(|(_, done)| *done == 1.));
+    }
+
+    #[test]
+    fn sends_login_and_headers_with_every_request() {
+        let total = 3 * 1024 * 1024;
+        let direct::server::Served { url, seen, .. } = serve(total, None);
+        let access = Access {
+            username: "me".into(),
+            password: "p@ss".into(),
+            referer: "https://example.com/page".into(),
+            cookie: "session=1".into(),
+            user_agent: "Test/1".into(),
+        };
+        let mut job = Job::default();
+        job.start(Request { access, ..request(u64::MAX - 12, &url) });
+        assert_content(&finish(&mut job).unwrap(), total);
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() >= 3, "probe and parts: {seen:?}");
+        for headers in seen.iter().map(|h| h.to_lowercase()) {
+            // Base64 of "me:p@ss".
+            assert!(headers.contains("authorization: basic bwu6cebzcw=="), "{headers}");
+            assert!(headers.contains("referer: https://example.com/page"), "{headers}");
+            assert!(headers.contains("cookie: session=1"), "{headers}");
+            assert!(headers.contains("user-agent: test/1"), "{headers}");
+        }
+    }
+
+    #[test]
+    fn finds_the_login_for_a_link() {
+        set_site_logins(vec![("https://Files.Example.com/".into(), "site".into(), "pw".into())]);
+        let none = Access::default();
+        let own = Access { username: "me".into(), ..Default::default() };
+        let login = |a: &Access, url: &str| a.login(url);
+        let pair = |u: &str, p: &str| Some((u.to_string(), p.to_string()));
+        assert_eq!(login(&own, "https://files.example.com/a"), pair("me", ""));
+        assert_eq!(login(&none, "https://u%40x:p%3A1@other.org/a"), pair("u@x", "p:1"));
+        assert_eq!(login(&none, "https://files.example.com/a"), pair("site", "pw"));
+        assert_eq!(login(&none, "https://cdn.files.example.com/a"), pair("site", "pw"));
+        assert_eq!(login(&none, "https://example.com/a"), None);
+        assert_eq!(login(&none, "https://notfiles.example.com/a"), None);
+        set_site_logins(Vec::new());
+
+        let args = Access { referer: "https://r/".into(), cookie: "a=1".into(), ..own }.ytdlp_args("https://x/");
+        assert_eq!(
+            args,
+            ["--username", "me", "--password", "", "--referer", "https://r/", "--add-header", "Cookie:a=1"]
+        );
     }
 
     #[test]
@@ -577,6 +712,7 @@ mod live {
             ffmpeg_bin: "ffmpeg".into(),
             limit_bps: 0,
             fragments: 8,
+            access: Access::default(),
         });
         let mut peak = 0;
         loop {
@@ -618,6 +754,7 @@ mod live {
             ffmpeg_bin: String::new(),
             limit_bps: 2 * 1024 * 1024,
             fragments: 8,
+            access: Access::default(),
         };
         let mut job = Job::default();
         job.start(request.clone());
@@ -651,6 +788,7 @@ mod live {
             ffmpeg_bin: String::new(),
             limit_bps: 2 * 1024 * 1024,
             fragments: 4,
+            access: Access::default(),
         };
         let mut job = Job::default();
         job.start(request.clone());
@@ -661,7 +799,7 @@ mod live {
         job.take_log();
         // Another address for the same file.
         let url = "https://proof.ovh.net/files/10Mb.dat?refreshed=1".to_string();
-        let info = RUNTIME.block_on(inspect(&url)).unwrap();
+        let info = RUNTIME.block_on(inspect(&url, &Access::default())).unwrap();
         assert_eq!((info.total, info.ranged), (Some(10 * 1024 * 1024), true));
         job.start(Request { url, limit_bps: 0, ..request });
         let path = loop {

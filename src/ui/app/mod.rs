@@ -432,6 +432,7 @@ impl SyphrApp {
                             (own, total) => own.min(total),
                         },
                         fragments,
+                        access: d.access.clone(),
                     });
                     d.status = Status::Downloading;
                     active += 1;

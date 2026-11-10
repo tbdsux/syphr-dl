@@ -445,6 +445,7 @@ mod live {
             ffmpeg_bin: ffmpeg.display().to_string(),
             limit_bps: 0,
             fragments: 4,
+            access: Default::default(),
         });
         let path = loop {
             std::thread::sleep(Duration::from_millis(300));

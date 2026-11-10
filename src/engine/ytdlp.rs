@@ -313,6 +313,7 @@ pub(super) async fn run_ytdlp(request: &Request, selector: &str, shared: &Shared
     if let Some(proxy) = proxy()? {
         cmd.arg("--proxy").arg(proxy);
     }
+    cmd.args(request.access.ytdlp_args(&request.url));
     let mut child = cmd
         .arg("--")
         .arg(&request.url)

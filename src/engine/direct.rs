@@ -12,7 +12,7 @@ use reqwest::{StatusCode, header};
 use tokio::task::JoinSet;
 
 use super::names::{chosen_name, file_name_of, move_file, part_path, response_file_name, unique_path};
-use super::{Layout, Part, Request, Shared, TOTAL_LIMIT, client, err};
+use super::{Access, Layout, Part, Request, Shared, TOTAL_LIMIT, err};
 
 const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -86,9 +86,9 @@ pub struct LinkInfo {
 }
 
 /// One tiny ranged request tells us the size, the name, and whether parts are possible.
-pub async fn inspect(url: &str) -> Result<LinkInfo, String> {
-    let resp = client()?
-        .get(url)
+pub async fn inspect(url: &str, access: &Access) -> Result<LinkInfo, String> {
+    let resp = access
+        .get(url)?
         .header(header::RANGE, "bytes=0-0")
         .send()
         .await
@@ -124,7 +124,7 @@ pub async fn inspect(url: &str) -> Result<LinkInfo, String> {
 
 async fn probe(request: &Request, shared: &Shared) -> Result<Layout, String> {
     shared.log(format!("GET {} (Range: bytes=0-0)", request.url));
-    let LinkInfo { name, total, ranged, summary, .. } = inspect(&request.url).await?;
+    let LinkInfo { name, total, ranged, summary, .. } = inspect(&request.url, &request.access).await?;
     shared.log(summary);
     let name = chosen_name(request.file_name.as_deref(), name);
 
@@ -219,7 +219,7 @@ async fn fetch_part(
         part.done.store(0, Relaxed);
         file.set_len(0).map_err(err)?;
     }
-    let mut req = client()?.get(&request.url);
+    let mut req = request.access.get(&request.url)?;
     let range = if ranged {
         let range = format!("bytes={}-{}", part.start + part.done.load(Relaxed), part.end());
         req = req.header(header::RANGE, &range);

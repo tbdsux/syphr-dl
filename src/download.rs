@@ -60,6 +60,8 @@ pub struct Download {
     pub speed_history: Vec<u64>,
     /// This download's own speed limit in KB/s, 0 for none; None uses Settings' limit per download.
     pub limit_kbps: Option<u64>,
+    /// Login and extra headers for every request.
+    pub access: crate::engine::Access,
 }
 
 impl Download {
@@ -134,6 +136,7 @@ mod tests {
             fragments: Vec::new(),
             speed_history: Vec::new(),
             limit_kbps: None,
+            access: Default::default(),
         };
         assert!((d.progress() - 64.58).abs() < 0.1);
         assert_eq!(d.eta_secs(), Some(4));

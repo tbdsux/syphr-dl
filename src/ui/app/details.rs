@@ -17,7 +17,7 @@ use gpui_kit::*;
 
 use super::SyphrApp;
 use crate::download::{Download, SPEED_SAMPLES, Source, Status, format_bytes, format_duration};
-use crate::engine;
+use crate::engine::{self, Access};
 use crate::ui::downloads_table::{
     eta_text, fragment_strip, kind_color, kind_icon, next_step, progress_color, size_text, speed_text, status_label,
 };
@@ -76,9 +76,9 @@ impl SyphrApp {
     /// The link must serve the same size with byte ranges; otherwise nothing changes and the window says why.
     pub fn refresh_address(&mut self, id: u64, url: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
-        let (total, probe) = (d.total_bytes, url.clone());
+        let (total, access, probe) = (d.total_bytes, d.access.clone(), url.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let info = match engine::RUNTIME.spawn(async move { engine::inspect(&probe).await }).await {
+            let info = match engine::RUNTIME.spawn(async move { engine::inspect(&probe, &access).await }).await {
                 Ok(result) => result,
                 Err(e) => Err(e.to_string()),
             };
@@ -119,8 +119,20 @@ pub struct DownloadDetails {
     address: Entity<InputState>,
     /// KB/s; empty uses Settings' limit.
     limit: Entity<InputState>,
+    /// Login and header fields, each with its label.
+    access: Vec<(&'static str, Entity<InputState>)>,
     _subscriptions: Vec<Subscription>,
 }
+
+type AccessField = (&'static str, fn(&Access) -> &String, fn(&mut Access, String));
+
+const ACCESS_FIELDS: [AccessField; 5] = [
+    ("Username", |a| &a.username, |a, v| a.username = v),
+    ("Password", |a| &a.password, |a, v| a.password = v),
+    ("Referer", |a| &a.referer, |a, v| a.referer = v),
+    ("Cookie", |a| &a.cookie, |a, v| a.cookie = v),
+    ("User agent", |a| &a.user_agent, |a, v| a.user_agent = v),
+];
 
 impl DownloadDetails {
     fn new(app: Entity<SyphrApp>, id: u64, tab: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -129,7 +141,7 @@ impl DownloadDetails {
         let address = cx.new(|cx| InputState::new(window, cx).default_value(url));
         let limit = d.as_ref().and_then(|d| d.limit_kbps).map(|l| l.to_string()).unwrap_or_default();
         let limit = cx.new(|cx| InputState::new(window, cx).placeholder("Default").default_value(limit));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe(&app, |_, _, cx| cx.notify()),
             cx.observe(&address, |_, _, cx| cx.notify()),
             cx.subscribe(&limit, |this, input, event: &InputEvent, cx| {
@@ -139,7 +151,24 @@ impl DownloadDetails {
                 }
             }),
         ];
-        Self { app: app.downgrade(), id, tab, address, limit, _subscriptions: subscriptions }
+        let saved = d.map(|d| d.access).unwrap_or_default();
+        let access = ACCESS_FIELDS
+            .iter()
+            .map(|&(label, get, set)| {
+                let value = get(&saved).clone();
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx).masked(label == "Password").placeholder("None").default_value(value)
+                });
+                subscriptions.push(cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let (id, value) = (this.id, input.read(cx).value().to_string());
+                        this.app.update(cx, |app, cx| app.edit_download(id, |d| set(&mut d.access, value), cx)).ok();
+                    }
+                }));
+                (label, input)
+            })
+            .collect();
+        Self { app: app.downgrade(), id, tab, address, limit, access, _subscriptions: subscriptions }
     }
 }
 
@@ -348,7 +377,7 @@ impl DownloadDetails {
     fn render_options(&self, d: &Download, cx: &mut Context<Self>) -> impl IntoElement {
         let address = self.address.read(cx).value().trim().to_string();
         let can_refresh = d.source == Source::Direct && matches!(d.status, Status::Paused | Status::Failed);
-        let (app, id) = (self.app.clone(), self.id);
+        let (app, id, muted) = (self.app.clone(), self.id, cx.theme().muted_foreground);
         let default = match AppSettings::get(cx).speed_limit_kbps as u64 {
             0 => "no limit".to_string(),
             kbps => format!("{kbps} KB/s"),
@@ -388,7 +417,16 @@ impl DownloadDetails {
                         .label("Speed limit (KB/s)")
                         .description(limit_help)
                         .child(Input::new(&self.limit).small()),
-                ),
+                )
+                .children(self.access.iter().map(|(label, input)| {
+                    let field = Input::new(input).small();
+                    let field = if *label == "Password" { field.mask_toggle() } else { field };
+                    Field::new().label(*label).child(field)
+                }))
+                .child(Field::new().child(div().text_xs().text_color(muted).child(
+                    "The login goes out as HTTP Basic, or to yt-dlp. Empty fields use the link's own login or a \
+                     saved one from Settings → Logins. Changes apply when the download next starts.",
+                ))),
         )
     }
 }

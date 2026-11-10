@@ -237,6 +237,7 @@ mod tests {
             fragments: Vec::new(),
             speed_history: Vec::new(),
             limit_kbps: None,
+            access: Default::default(),
         }
     }
 

@@ -111,6 +111,7 @@ fn main() {
             .expect("bundled fonts load");
         cx.set_global(settings::AppSettings::load());
         engine::set_proxy(settings::AppSettings::get(cx).proxy_url());
+        engine::set_site_logins(settings::AppSettings::get(cx).site_logins());
         engine::ytdlp::set_options(settings::AppSettings::get(cx).ytdlp_options());
         settings::load_bundled_themes(cx);
         settings::apply_appearance(cx);

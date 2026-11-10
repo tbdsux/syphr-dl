@@ -44,6 +44,8 @@ pub struct AppSettings {
     pub proxy_port: f64,
     pub proxy_username: String,
     pub proxy_password: String,
+    /// Used for a site's links when the download has no login of its own; passwords are plain text.
+    pub site_logins: Vec<SiteLogin>,
     pub ytdlp_path: String,
     /// yt-dlp needs it to merge separate video and audio streams.
     pub ffmpeg_path: String,
@@ -65,6 +67,15 @@ pub struct AppSettings {
 
 impl Global for AppSettings {}
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteLogin {
+    /// A host such as example.com; its subdomains match too.
+    pub site: String,
+    pub username: String,
+    pub password: String,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -81,6 +92,7 @@ impl Default for AppSettings {
             proxy_port: 8080.,
             proxy_username: String::new(),
             proxy_password: String::new(),
+            site_logins: Vec::new(),
             ytdlp_path: "yt-dlp".into(),
             ffmpeg_path: "ffmpeg".into(),
             ytdlp_codec: "any".into(),
@@ -156,6 +168,10 @@ impl AppSettings {
             url.set_password(Some(&self.proxy_password)).map_err(|_| invalid())?;
         }
         Ok(url.to_string())
+    }
+
+    pub fn site_logins(&self) -> Vec<(String, String, String)> {
+        self.site_logins.iter().map(|l| (l.site.clone(), l.username.clone(), l.password.clone())).collect()
     }
 
     pub fn ytdlp_options(&self) -> crate::engine::ytdlp::Options {
@@ -337,6 +353,63 @@ fn tool_path_field(
 fn update_proxy(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
     AppSettings::update(cx, edit);
     crate::engine::set_proxy(AppSettings::get(cx).proxy_url());
+}
+
+fn update_logins(cx: &mut App, edit: impl FnOnce(&mut Vec<SiteLogin>)) {
+    AppSettings::update(cx, |s| edit(&mut s.site_logins));
+    crate::engine::set_site_logins(AppSettings::get(cx).site_logins());
+}
+
+/// Key, placeholder, value, and how to save it.
+type LoginField = (&'static str, &'static str, String, fn(&mut SiteLogin, String));
+
+/// One saved login: site, username and password, each saved as it is typed.
+fn site_login_field(ix: usize) -> SettingField<SharedString> {
+    SettingField::render(move |_, window, cx| {
+        let login = AppSettings::get(cx).site_logins.get(ix).cloned().unwrap_or_default();
+        let fields: [LoginField; 3] = [
+            ("site", "example.com", login.site, |l, v| l.site = v),
+            ("username", "Username", login.username, |l, v| l.username = v),
+            ("password", "Password", login.password, |l, v| l.password = v),
+        ];
+        let inputs = fields.map(|(key, placeholder, value, set)| {
+            let value: SharedString = value.into();
+            let input = window.use_keyed_state(SharedString::from(format!("login-{key}-{ix}")), cx, |window, cx| {
+                cx.subscribe_self(move |input: &mut InputState, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let value = input.value().to_string();
+                        update_logins(cx, |logins| {
+                            if let Some(login) = logins.get_mut(ix) {
+                                set(login, value);
+                            }
+                        });
+                    }
+                })
+                .detach();
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .masked(key == "password")
+                    .default_value(value.clone())
+            });
+            // Rows shift up when one above is removed.
+            if input.read(cx).value() != value {
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+            let field = Input::new(&input).aria_label(placeholder).flex_1();
+            if key == "password" { field.mask_toggle() } else { field }
+        });
+        h_flex().w_full().gap_2().children(inputs).child(
+            Button::new(("remove-login", ix)).ghost().icon(IconName::Delete).tooltip("Remove login").on_click(
+                move |_, _, cx| {
+                    update_logins(cx, |logins| {
+                        if ix < logins.len() {
+                            logins.remove(ix);
+                        }
+                    })
+                },
+            ),
+        )
+    })
 }
 
 fn update_ytdlp(cx: &mut App, edit: impl FnOnce(&mut AppSettings)) {
@@ -636,6 +709,28 @@ impl Render for SettingsView {
                     .items(proxy_items),
             );
 
+        let mut login_items: Vec<SettingItem> = (0..AppSettings::get(cx).site_logins.len())
+            .map(|ix| SettingItem::new(format!("Login {}", ix + 1), site_login_field(ix)).layout(Axis::Vertical))
+            .collect();
+        login_items.push(SettingItem::new(
+            "New login",
+            SettingField::render(|_, _, _| {
+                Button::new("add-login")
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("Add")
+                    .on_click(|_, _, cx| update_logins(cx, |logins| logins.push(SiteLogin::default())))
+            }),
+        ));
+        let logins = SettingPage::new("Logins").icon(IconName::CircleUser).resettable(false).group(
+            SettingGroup::new()
+                .description(
+                    "Sent as HTTP Basic to a site and its subdomains, and to yt-dlp, when a download has no login of \
+                     its own. Passwords are saved unencrypted in Syphr's settings file.",
+                )
+                .items(login_items),
+        );
+
         let ytdlp = SettingPage::new("YouTube & sites").icon(IconName::Globe).resettable(true).group(
             SettingGroup::new().items([
                 SettingItem::new(
@@ -842,7 +937,7 @@ impl Render for SettingsView {
             div().flex_1().min_h_0().child(
                 Settings::new("settings")
                     .sidebar_width(cx.theme().font_size * 18.)
-                    .pages([appearance, downloads, proxy, ytdlp, updates, shortcuts, about]),
+                    .pages([appearance, downloads, proxy, logins, ytdlp, updates, shortcuts, about]),
             ),
         )
     }
