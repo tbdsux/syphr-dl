@@ -1,13 +1,17 @@
 //! Turning text into download links: lists, wildcard patterns, and the links on a web page.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
-/// Most links one pattern may produce.
+use reqwest::Url;
+
+/// Most links one pattern or page grab may produce.
 pub const MAX_LINKS: usize = 10_000;
-/// Dropped or imported files bigger than this aren't read for links.
+/// Most pages one grab fetches, the first page included.
+const MAX_PAGES: usize = 30;
+/// Pages bigger than this aren't read for links.
 const MAX_PAGE_BYTES: u64 = 5 << 20;
 
-/// File types the clipboard watcher looks for, until the user changes them.
+/// File types the clipboard watcher and the grabber look for, until the user changes them.
 pub const DEFAULT_TYPES: &str = "3gp 7z aac apk appimage avi bz2 deb dmg epub exe flac gz iso m4a m4b m4v mkv mov mp3 \
      mp4 mpeg mpg msi ogg opus pdf pkg rar rpm tar tgz wav webm wma wmv xz zip zst";
 
@@ -105,6 +109,88 @@ fn range(inner: &str) -> Option<Result<Vec<String>, String>> {
     Some(Ok(values.into_iter().map(|c| char::from(c).to_string()).collect()))
 }
 
+/// Every `href` and `src` in `html` that resolves to a web link, in page order, without fragments or repeats.
+pub fn extract_links(html: &str, base: &Url) -> Vec<Url> {
+    // shortcut: a plain attribute scan; ignores <base href>, srcset and links built by scripts. Use an HTML parser if
+    // pages that need those matter.
+    let lower = html.to_ascii_lowercase();
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    let mut from = 0;
+    while let Some((start, len)) =
+        ["href", "src"].iter().filter_map(|attr| Some((from + lower[from..].find(attr)?, attr.len()))).min()
+    {
+        from = start + len;
+        // Attribute names follow whitespace; this skips words like `data-href` and text such as `ahref`.
+        if !lower[..start].ends_with(|c: char| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let Some(rest) = html[from..].trim_start().strip_prefix('=') else { continue };
+        let rest = rest.trim_start();
+        let value = match rest.chars().next() {
+            Some(quote @ ('"' | '\'')) => rest[1..].split(quote).next(),
+            _ => rest.split(|c: char| c.is_ascii_whitespace() || c == '>').next(),
+        };
+        let Some(value) = value.map(|v| v.trim().replace("&amp;", "&")).filter(|v| !v.is_empty()) else { continue };
+        let Ok(mut url) = base.join(&value) else { continue };
+        url.set_fragment(None);
+        if matches!(url.scheme(), "http" | "https") && seen.insert(url.clone()) {
+            found.push(url);
+        }
+    }
+    found
+}
+
+/// Whether a link probably leads to another page rather than a file, so the grabber may follow it.
+fn is_page(url: &Url) -> bool {
+    extension(url.as_str()).is_none_or(|ext| matches!(ext.as_str(), "htm" | "html" | "php" | "asp" | "aspx" | "jsp"))
+}
+
+/// The links on `page`, and with `depth` > 0 on the pages of the same site it links to, that many levels down.
+/// Needs the engine's tokio runtime. Only the first page failing is an error.
+pub async fn grab(page: &str, depth: usize) -> Result<Vec<String>, String> {
+    let client = crate::engine::client()?;
+    let start = Url::parse(page.trim()).map_err(|_| "Enter a page address that starts with http:// or https://")?;
+    let mut queue = VecDeque::from([(start.clone(), 0)]);
+    let mut visited = HashSet::from([start.clone()]);
+    let (mut links, mut seen) = (Vec::new(), HashSet::new());
+    let mut fetched = 0;
+    while let Some((url, level)) = queue.pop_front() {
+        if fetched == MAX_PAGES {
+            break;
+        }
+        fetched += 1;
+        let html = match fetch_page(&client, &url).await {
+            Ok(html) => html,
+            Err(e) if fetched == 1 => return Err(e),
+            Err(_) => continue,
+        };
+        for link in extract_links(&html, &url) {
+            if level < depth && link.host() == start.host() && is_page(&link) && visited.insert(link.clone()) {
+                queue.push_back((link.clone(), level + 1));
+            }
+            if links.len() < MAX_LINKS && seen.insert(link.clone()) {
+                links.push(link.to_string());
+            }
+        }
+    }
+    Ok(links)
+}
+
+async fn fetch_page(client: &reqwest::Client, url: &Url) -> Result<String, String> {
+    let response = client.get(url.clone()).send().await.map_err(|e| format!("Couldn't open the page: {e}"))?;
+    let response = response.error_for_status().map_err(|e| format!("The page couldn't be loaded: {e}"))?;
+    let html = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|t| t.to_str().ok())
+        .is_none_or(|t| t.contains("html"));
+    if !html || response.content_length().is_some_and(|len| len > MAX_PAGE_BYTES) {
+        return Err("That address isn't a web page.".into());
+    }
+    response.text().await.map_err(|e| format!("Couldn't read the page: {e}"))
+}
+
 /// The links in a dropped or imported file: a text list, or a `.webloc` / `.url` web shortcut. Large files are
 /// skipped rather than read, in case a download itself was dropped.
 pub fn links_in_file(path: &std::path::Path) -> Vec<String> {
@@ -186,6 +272,26 @@ mod tests {
     }
 
     #[test]
+    fn extracts_links() {
+        let base = Url::parse("https://site.com/dir/page.html").unwrap();
+        let html = r##"<a href="file.zip">x</a> <A HREF='/abs.pdf#p2'> <img src=pic.jpg>
+            <a data-href="nope"> <a href="mailto:me@x.com"> <a href = "https://other.com/v.mp4?a=1&amp;b=2">
+            <a href="file.zip"> <script src="//cdn.com/s.js"></script> <a href="#top">"##;
+        let links: Vec<String> = extract_links(html, &base).into_iter().map(String::from).collect();
+        assert_eq!(
+            links,
+            [
+                "https://site.com/dir/file.zip",
+                "https://site.com/abs.pdf",
+                "https://site.com/dir/pic.jpg",
+                "https://other.com/v.mp4?a=1&b=2",
+                "https://cdn.com/s.js",
+                "https://site.com/dir/page.html",
+            ]
+        );
+    }
+
+    #[test]
     fn reads_dropped_files() {
         let dir = std::env::temp_dir().join(format!("syphr-links-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -201,6 +307,36 @@ mod tests {
         assert!(links_in_file(&file("bin.dat", "\u{0}\u{1}")).is_empty());
         assert!(links_in_file(&dir).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn grabs_links_from_same_site_pages() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut lines = BufReader::new(&stream).lines().map_while(Result::ok);
+                let path = lines.next().unwrap_or_default().split(' ').nth(1).unwrap_or_default().to_string();
+                lines.take_while(|line| !line.is_empty()).for_each(drop);
+                let body = match path.as_str() {
+                    "/" => r#"<a href="/a.zip"> <a href="more.html"> <a href="https://other.example/x.html">"#,
+                    "/more.html" => r#"<a href="/b.pdf"> <a href="/deeper.html">"#,
+                    "/deeper.html" => "<a href=/c.zip>",
+                    _ => "",
+                };
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length";
+                write!(stream, "{head}: {}\r\n\r\n{body}", body.len()).ok();
+            }
+        });
+        let grab_at = |depth| crate::engine::RUNTIME.block_on(grab(&format!("{base}/"), depth)).unwrap();
+        let has = |links: &[String], path: &str| links.contains(&format!("{base}{path}"));
+        let top = grab_at(0);
+        assert!(has(&top, "/a.zip") && has(&top, "/more.html") && !has(&top, "/b.pdf"));
+        let one = grab_at(1);
+        assert!(has(&one, "/b.pdf") && has(&one, "/deeper.html") && !has(&one, "/c.zip"));
+        assert!(has(&grab_at(2), "/c.zip"));
+        assert!(crate::engine::RUNTIME.block_on(grab("not a link", 1)).is_err());
     }
 
     #[test]

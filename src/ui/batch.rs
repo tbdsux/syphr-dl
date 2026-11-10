@@ -1,5 +1,5 @@
-//! The batch dialog: a checklist of links added at once, from a list (paste, drop, import, command line) or a
-//! wildcard pattern.
+//! The batch dialog: a checklist of links added at once, from a list (paste, drop, import, command line), a
+//! wildcard pattern, or the links on a web page.
 
 use std::ops::Range;
 
@@ -10,12 +10,16 @@ use gpui_kit::component::{
     form::{Field, Form},
     h_flex,
     input::{Input, InputEvent, InputState},
+    radio::{Radio, RadioGroup},
+    spinner::Spinner,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::engine;
 use crate::links;
+use crate::ui::settings::AppSettings;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BatchKind {
@@ -23,6 +27,8 @@ pub enum BatchKind {
     List,
     /// One address with `[1-50]`-style ranges.
     Pattern,
+    /// The links found on a page.
+    Page,
 }
 
 impl BatchKind {
@@ -30,6 +36,7 @@ impl BatchKind {
         match self {
             BatchKind::List => "Add links",
             BatchKind::Pattern => "Batch download",
+            BatchKind::Page => "Grab links from a page",
         }
     }
 }
@@ -46,9 +53,14 @@ pub struct BatchAdd {
     /// Parallel to `links`.
     checked: Vec<bool>,
     pattern: Entity<InputState>,
+    page: Entity<InputState>,
+    types: Entity<InputState>,
+    /// How many levels of same-site pages the grabber follows.
+    depth: usize,
     folder: Entity<InputState>,
     /// Why there are no links to show.
     message: Option<SharedString>,
+    grabbing: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -64,22 +76,41 @@ impl BatchAdd {
     ) -> Self {
         let pattern =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://example.com/photos/img[001-120].jpg"));
+        let page = cx.new(|cx| InputState::new(window, cx).placeholder("https://example.com/downloads"));
+        let types_value = AppSettings::get(cx).watch_types.clone();
+        let types = cx.new(|cx| InputState::new(window, cx).default_value(types_value));
         let folder = cx.new(|cx| InputState::new(window, cx).default_value(folder));
-        let subscriptions = vec![cx.subscribe(&pattern, |this, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.expand(cx);
-            }
-        })];
-        if kind == BatchKind::Pattern {
-            pattern.update(cx, |state, cx| state.focus(window, cx));
+        let subscriptions = vec![
+            cx.subscribe(&pattern, |this, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.expand(cx);
+                }
+            }),
+            cx.subscribe(&page, |this, _, event, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.grab(cx);
+                }
+            }),
+        ];
+        let first = match kind {
+            BatchKind::List => None,
+            BatchKind::Pattern => Some(&pattern),
+            BatchKind::Page => Some(&page),
+        };
+        if let Some(input) = first {
+            input.update(cx, |state, cx| state.focus(window, cx));
         }
         let mut this = Self {
             kind,
             links: Vec::new(),
             checked: Vec::new(),
             pattern,
+            page,
+            types,
+            depth: 1,
             folder,
             message: None,
+            grabbing: None,
             _subscriptions: subscriptions,
         };
         this.set_links(links);
@@ -100,6 +131,39 @@ impl BatchAdd {
         };
         self.set_links(links);
         self.message = message;
+        cx.notify();
+    }
+
+    fn grab(&mut self, cx: &mut Context<Self>) {
+        let page = self.page.read(cx).value().trim().to_string();
+        let types = self.types.read(cx).value().to_string();
+        let depth = self.depth;
+        self.set_links(Vec::new());
+        self.message = None;
+        // Replacing the task drops (cancels) a grab still running.
+        self.grabbing = Some(cx.spawn(async move |this, cx| {
+            let result = match engine::RUNTIME.spawn(async move { links::grab(&page, depth).await }).await {
+                Ok(result) => result,
+                Err(e) => Err(e.to_string()),
+            };
+            this.update(cx, |this, cx| {
+                this.grabbing = None;
+                match result {
+                    Ok(found) => {
+                        let any_type = types.trim().is_empty();
+                        let found: Vec<String> =
+                            found.into_iter().filter(|link| any_type || links::has_type(link, &types)).collect();
+                        if found.is_empty() {
+                            this.message = Some("No links of those file types on that page.".into());
+                        }
+                        this.set_links(found);
+                    }
+                    Err(message) => this.message = Some(message.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
         cx.notify();
     }
 
@@ -166,20 +230,71 @@ impl BatchAdd {
 impl Render for BatchAdd {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.checked.iter().filter(|c| **c).count();
+        let muted = cx.theme().muted_foreground;
         let add_label = match selected {
             1 => "Add 1 download".to_string(),
             n => format!("Add {n} downloads"),
         };
         v_flex()
             .gap_4()
-            .child(Form::new().when(self.kind == BatchKind::Pattern, |this| {
+            .child(
+                Form::new()
+                    .when(self.kind == BatchKind::Pattern, |this| {
+                        this.child(
+                            Field::new()
+                                .label("Address")
+                                .description("Put [1-50], [001-120] or [a-z] where the address changes.")
+                                .child(Input::new(&self.pattern).id("pattern").small().prefix(IconName::Globe)),
+                        )
+                    })
+                    .when(self.kind == BatchKind::Page, |this| {
+                        this.child(
+                            Field::new().label("Page").child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_1().child(Input::new(&self.page).small().prefix(IconName::Globe)))
+                                    .child(
+                                        Button::new("find-links")
+                                            .small()
+                                            .outline()
+                                            .label("Find links")
+                                            .loading(self.grabbing.is_some())
+                                            .on_click(cx.listener(|this, _, _, cx| this.grab(cx))),
+                                    ),
+                            ),
+                        )
+                        .child(
+                            Field::new().label("Follow links on the same site").child(
+                                RadioGroup::horizontal("depth")
+                                    .selected_index(Some(self.depth))
+                                    .children(
+                                        ["Don't follow", "1 level", "2 levels"]
+                                            .map(|label| Radio::new(SharedString::from(label)).label(label)),
+                                    )
+                                    .on_change(cx.listener(|this, ix: &usize, _, cx| {
+                                        this.depth = *ix;
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .child(
+                            Field::new()
+                                .label("File types")
+                                .description("Extensions, separated by spaces. Leave empty for every link.")
+                                .child(Input::new(&self.types).small()),
+                        )
+                    }),
+            )
+            .when(self.grabbing.is_some(), |this| {
                 this.child(
-                    Field::new()
-                        .label("Address")
-                        .description("Put [1-50], [001-120] or [a-z] where the address changes.")
-                        .child(Input::new(&self.pattern).id("pattern").small().prefix(IconName::Globe)),
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(Spinner::new().small())
+                        .child("Reading the page…"),
                 )
-            }))
+            })
             .when_some(self.message.clone(), |this, message| {
                 this.child(div().text_sm().text_color(cx.theme().danger).child(message))
             })

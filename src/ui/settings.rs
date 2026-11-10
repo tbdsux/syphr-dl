@@ -55,7 +55,7 @@ pub struct AppSettings {
     pub auto_paste: bool,
     /// Offer links copied in other apps while Syphr runs.
     pub watch_clipboard: bool,
-    /// File types the clipboard watcher offers, separated by spaces.
+    /// File types the clipboard watcher offers and the grabber keeps, separated by spaces.
     pub watch_types: String,
     pub show_quick_download: bool,
     pub check_updates: bool,
@@ -547,7 +547,9 @@ impl Render for SettingsView {
                     .default_value(defaults.watch_types.clone()),
                 )
                 .layout(Axis::Vertical)
-                .description("Extensions, separated by spaces. Video sites are always caught."),
+                .description(
+                    "Extensions, separated by spaces. Video sites are always caught. Grab Links from Page starts with these.",
+                ),
                 SettingItem::new(
                     "Show Quick download",
                     SettingField::switch(

@@ -21,8 +21,8 @@ use crate::ui::batch::BatchKind;
 use crate::ui::downloads_table::{DownloadsTable, kind_color, kind_icon};
 use crate::ui::settings::AppSettings;
 use crate::{
-    BatchDownload, ClearSelection, CloseWindow, CopyLinks, ExportLinks, FocusSearch, ImportLinks, NewDownload,
-    OpenSettings, Remove, Retry, SelectAll, TogglePause,
+    BatchDownload, ClearSelection, CloseWindow, CopyLinks, ExportLinks, FocusSearch, GrabLinks, ImportLinks,
+    NewDownload, OpenSettings, Remove, Retry, SelectAll, TogglePause,
 };
 
 use super::{Filter, SyphrApp};
@@ -441,6 +441,9 @@ impl Render for SyphrApp {
             .on_action(cx.listener(|this, _: &NewDownload, window, cx| this.new_download(window, cx)))
             .on_action(cx.listener(|this, _: &BatchDownload, window, cx| {
                 this.open_batch(BatchKind::Pattern, Vec::new(), None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GrabLinks, window, cx| {
+                this.open_batch(BatchKind::Page, Vec::new(), None, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ImportLinks, window, cx| this.import_links(window, cx)))
             .on_action(cx.listener(|this, _: &ExportLinks, window, cx| this.export_links(window, cx)))
