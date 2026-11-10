@@ -182,13 +182,15 @@ mod tests {
 
     #[test]
     fn parses_command_lines() {
-        let launch = parse(&["https://a.com/x.zip", "--dir", "/tmp/d", "--name=y.zip", "--silent"]).unwrap();
+        // An absolute path for this OS; "/tmp/d" gains a drive letter on Windows.
+        let dir = std::env::temp_dir().join("d").display().to_string();
+        let launch = parse(&["https://a.com/x.zip", "--dir", &dir, "--name=y.zip", "--silent"]).unwrap();
         assert_eq!(
             launch,
             Launch {
                 request: AddRequest {
                     urls: vec!["https://a.com/x.zip".into()],
-                    dir: Some("/tmp/d".into()),
+                    dir: Some(dir),
                     name: Some("y.zip".into()),
                     silent: true,
                     queue_only: false,
@@ -201,7 +203,8 @@ mod tests {
         assert_eq!(launch.request.urls, ["https://a.com/1", "https://b.com/2?q=1"]);
         assert!(launch.request.queue_only);
         assert!(parse(&["--new-instance", "-psn_0_123"]).unwrap().new_instance);
-        assert!(parse(&["--dir", "rel"]).unwrap().request.dir.unwrap().ends_with("/rel"));
+        let rel = parse(&["--dir", "rel"]).unwrap().request.dir.unwrap();
+        assert!(Path::new(&rel).is_absolute() && Path::new(&rel).ends_with("rel"));
         assert_eq!(parse(&[]).unwrap().request, AddRequest::default());
         assert!(parse(&["--dir"]).is_err());
         assert!(parse(&["--bogus"]).is_err());
