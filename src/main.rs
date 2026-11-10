@@ -90,6 +90,16 @@ fn main() {
         }
         return;
     }
+    let launch = match instance::parse_args(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned())) {
+        Ok(launch) => launch,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(if message.starts_with("Usage") { 0 } else { 2 });
+        }
+    };
+    if !launch.new_instance && instance::forward(&launch.request) {
+        return;
+    }
     // GPUI's Linux renderer reads these at startup; its defaults leave small text soft. Users can still override.
     #[cfg(target_os = "linux")]
     for (key, value) in
@@ -100,9 +110,20 @@ fn main() {
             unsafe { std::env::set_var(key, value) };
         }
     }
+    // Links from the command line, later launches and syphr:// links, handled once the window is up.
+    let (requests, incoming) = async_channel::unbounded();
+    if !launch.request.urls.is_empty() {
+        requests.try_send(launch.request).ok();
+    }
     let app = gpui_kit::application().with_assets(AppAssets);
     app.on_reopen(show_main_window);
-    app.run(|cx| {
+    let scheme_requests = requests.clone();
+    app.on_open_urls(move |urls| {
+        for request in urls.iter().filter_map(|url| instance::from_scheme(url)) {
+            scheme_requests.try_send(request).ok();
+        }
+    });
+    app.run(move |cx| {
         gpui_kit::init(cx);
         cx.set_app_identity("dev.tbdsux.syphr-dl", "Syphr");
 
@@ -158,6 +179,23 @@ fn main() {
                 .update(cx, |_, window, cx| offer_view.update(cx, |this, cx| this.take_request(request, window, cx)))
                 .ok();
         });
+        instance::listen(requests);
+        let request_view = view.clone();
+        cx.spawn(async move |cx| {
+            while let Ok(request) = incoming.recv().await {
+                cx.update(|cx| {
+                    if !request.silent && !request.queue_only {
+                        show_main_window(cx);
+                    }
+                    window
+                        .update(cx, |_, window, cx| {
+                            request_view.update(cx, |this, cx| this.take_request(request, window, cx))
+                        })
+                        .ok();
+                });
+            }
+        })
+        .detach();
         tools::install_shipped(window, cx);
         tray::install(window, view, cx);
         cx.activate(true);
