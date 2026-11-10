@@ -98,19 +98,39 @@ impl Shared {
 struct Layout {
     path: PathBuf,
     ranged: bool,
-    parts: Vec<Part>,
+    /// Grows while downloading: a connection that finishes early takes over half of another part's rest.
+    parts: Mutex<Vec<Arc<Part>>>,
+}
+
+impl Layout {
+    fn parts(&self) -> Vec<Arc<Part>> {
+        self.parts.lock().unwrap().clone()
+    }
 }
 
 struct Part {
     start: u64,
-    /// Inclusive; u64::MAX when the size is unknown.
-    end: u64,
+    /// Inclusive; u64::MAX when the size is unknown. A split moves it down, so it stays locked while a chunk is
+    /// written and counted.
+    end: Mutex<u64>,
     done: AtomicU64,
 }
 
 impl Part {
+    fn new(start: u64, end: u64) -> Self {
+        Self { start, end: Mutex::new(end), done: AtomicU64::new(0) }
+    }
+
+    fn end(&self) -> u64 {
+        *self.end.lock().unwrap()
+    }
+
     fn len(&self) -> u64 {
-        self.end.saturating_sub(self.start).saturating_add(1)
+        self.end().saturating_sub(self.start).saturating_add(1)
+    }
+
+    fn left(&self) -> u64 {
+        self.len().saturating_sub(self.done.load(Relaxed))
     }
 }
 
@@ -160,7 +180,7 @@ impl Job {
 
     pub fn received(&self) -> u64 {
         match self.shared.layout.get() {
-            Some(layout) => layout.parts.iter().map(|p| p.done.load(Relaxed)).sum(),
+            Some(layout) => layout.parts().iter().map(|p| p.done.load(Relaxed)).sum(),
             None => self.shared.received.load(Relaxed),
         }
     }
@@ -169,14 +189,17 @@ impl Job {
         Some(self.shared.total.load(Relaxed)).filter(|t| *t > 0)
     }
 
-    /// Each part's finished fraction (0–1); empty when there is only one part or yt-dlp runs it.
-    pub fn fragments(&self) -> Vec<f32> {
-        match self.shared.layout.get() {
-            Some(layout) if layout.parts.len() > 1 => {
-                layout.parts.iter().map(|p| p.done.load(Relaxed) as f32 / p.len() as f32).collect()
-            }
-            _ => Vec::new(),
+    /// Each part in file order as (share of the file, finished fraction), both 0–1; empty when there is only one
+    /// part or yt-dlp runs it.
+    pub fn fragments(&self) -> Vec<(f32, f32)> {
+        let Some(layout) = self.shared.layout.get() else { return Vec::new() };
+        let mut parts = layout.parts();
+        let total = self.shared.total.load(Relaxed);
+        if parts.len() < 2 || total == 0 {
+            return Vec::new();
         }
+        parts.sort_by_key(|p| p.start);
+        parts.iter().map(|p| (p.len() as f32 / total as f32, p.done.load(Relaxed) as f32 / p.len() as f32)).collect()
     }
 
     pub fn take_log(&self) -> Vec<String> {
@@ -364,6 +387,59 @@ mod tests {
 }
 
 #[cfg(test)]
+mod offline {
+    use super::*;
+    use direct::server::{byte, serve};
+
+    pub(super) fn request(id: u64, url: &str) -> Request {
+        Request {
+            id,
+            url: url.into(),
+            folder: std::env::temp_dir().join(format!("syphr-offline-{}-{id}", std::process::id())),
+            selector: None,
+            file_name: None,
+            ytdlp_bin: String::new(),
+            ffmpeg_bin: String::new(),
+            limit_bps: 0,
+            fragments: 2,
+        }
+    }
+
+    pub(super) fn finish(job: &mut Job) -> Result<PathBuf, String> {
+        for _ in 0..600 {
+            std::thread::sleep(Duration::from_millis(50));
+            if let Some(result) = job.take_result() {
+                return result;
+            }
+        }
+        panic!("the download didn't finish")
+    }
+
+    pub(super) fn assert_content(path: &std::path::Path, total: u64) {
+        let data = std::fs::read(path).unwrap();
+        assert_eq!(data.len() as u64, total);
+        assert!(data.iter().enumerate().all(|(i, b)| *b == byte(i as u64)), "bytes out of place");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn finished_connections_take_over_the_slow_part() {
+        let total = 8 * 1024 * 1024 + 5;
+        // Two parts; the second crawls, so the first must take over half of what it has left, more than once.
+        let direct::server::Served { url, seen, .. } = serve(total, Some(total.div_ceil(2)));
+        let mut job = Job::default();
+        job.start(request(u64::MAX - 10, &url));
+        let path = finish(&mut job).unwrap();
+        assert_content(&path, total);
+        let parts = job.shared.layout.get().unwrap().parts().len();
+        assert!(parts > 2, "only {parts} parts");
+        assert_eq!(seen.lock().unwrap().len(), parts + 1, "one probe and one request per part");
+        assert_eq!(job.received(), total);
+        assert!(job.fragments().iter().all(|(_, done)| *done == 1.));
+    }
+}
+
+#[cfg(test)]
 mod live {
     use super::*;
     use names::file_name_of;
@@ -394,7 +470,7 @@ mod live {
                     "{} {} bytes, parts {:?}, peak {}/s",
                     path.display(),
                     fs::metadata(&path).unwrap().len(),
-                    job.shared.layout.get().map(|l| l.parts.len()),
+                    job.shared.layout.get().map(|l| l.parts().len()),
                     crate::download::format_bytes(peak)
                 );
                 return (path, job.received());

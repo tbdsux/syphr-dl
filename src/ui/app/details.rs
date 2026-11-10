@@ -181,7 +181,7 @@ impl DownloadDetails {
                 this.child(
                     v_flex()
                         .gap_1()
-                        .child(div().text_xs().text_color(muted).child(format!("{} connections", d.fragments.len())))
+                        .child(div().text_xs().text_color(muted).child(format!("{} parts", d.fragments.len())))
                         .child(fragment_strip(d, rems(0.5), cx)),
                 )
             })

@@ -53,8 +53,9 @@ pub struct Download {
     pub file_name: Option<String>,
     /// Where the finished file was saved.
     pub path: Option<PathBuf>,
-    /// Each parallel part's finished fraction (0–1); empty for single-connection downloads.
-    pub fragments: Vec<f32>,
+    /// Each part in file order as (share of the file, finished fraction), both 0–1; empty for single-connection
+    /// downloads.
+    pub fragments: Vec<(f32, f32)>,
     /// Recent speeds in bytes per second, oldest first; not saved, so empty after a restart.
     pub speed_history: Vec<u64>,
 }

@@ -256,19 +256,23 @@ fn progress_wash(d: &Download, cx: &App) -> Vec<Div> {
     let edge = if d.fragments.is_empty() {
         edge.child(div().h_full().bg(color).w(relative(share)))
     } else {
-        edge.gap_px().children(d.fragments.iter().map(|&f| {
-            div().flex_1().h_full().bg(color.opacity(0.25)).child(div().h_full().bg(color).w(relative(f.clamp(0., 1.))))
+        edge.gap_px().children(d.fragments.iter().map(|&(share, f)| {
+            div()
+                .flex_basis(relative(share))
+                .h_full()
+                .bg(color.opacity(0.25))
+                .child(div().h_full().bg(color).w(relative(f.clamp(0., 1.))))
         }))
     };
     vec![div().absolute().top_0().bottom_0().left_0().w(relative(share)).bg(color.opacity(0.12)), edge]
 }
 
-/// One segment per parallel part, in file order, so stalled connections stand out.
+/// One segment per part, in file order and sized by its range, so stalled connections stand out.
 pub fn fragment_strip(d: &Download, height: Rems, cx: &App) -> Div {
     let (color, track) = (progress_color(d.status, cx), cx.theme().secondary);
-    h_flex().gap_px().children(d.fragments.iter().map(|f| {
+    h_flex().gap_px().children(d.fragments.iter().map(|&(share, f)| {
         div()
-            .flex_1()
+            .flex_basis(relative(share))
             .h(height)
             .rounded_full()
             .bg(track)

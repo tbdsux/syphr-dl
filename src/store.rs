@@ -246,7 +246,7 @@ mod tests {
             selector: Some("bv*".into()),
             file_name: None,
             path: Some("/tmp/1.mp4".into()),
-            fragments: vec![0.5],
+            fragments: vec![(1., 0.5)],
             speed_history: Vec::new(),
         }
     }
