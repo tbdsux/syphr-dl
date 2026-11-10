@@ -7,12 +7,14 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 | Path | What it does |
 | --- | --- |
 | `src/main.rs` | Entry point: app identity, fonts, themes, menus, actions, rebindable shortcuts |
-| `src/download.rs` | `Download` — one row's state: `Status`, `Kind`, `Source`, progress, speed, ETA |
+| `src/download.rs` | `Download` — one row's state: `Status`, `Kind`, `Source`, queue and position, progress, speed, ETA |
+| `src/queue.rs` | `Queue`: schedule windows (`inside`, `next_start`), download order (`reorder`), finish actions |
 | `src/engine/` | Download jobs. See [engine.md](engine.md) |
 | `src/tools.rs` | Finds and installs yt-dlp and ffmpeg. See [tools.md](tools.md) |
 | `src/ui/app/mod.rs` | `SyphrApp`: the list, selection, filters, and the `pump` that drives jobs |
 | `src/ui/app/views.rs` | Drawing: title bar, sidebar, toolbar, bulk bar |
 | `src/ui/app/details.rs` | The details window a double-clicked row opens, one per download |
+| `src/ui/app/queues.rs` | Queue commands, the scheduler tick, the finish countdown, and the Queues window |
 | `src/ui/app/selection.rs` | Finder-style multi-select (click, ⌘/Ctrl-click, Shift-click) |
 | `src/ui/add_download.rs` | The link field in the title bar and its drop-down panel |
 | `src/ui/batch.rs` | The batch dialog: a checklist of links from a list, a wildcard pattern or a web page |
@@ -30,7 +32,7 @@ Syphr is one GPUI window (`SyphrApp`) that owns the download list, plus a settin
 
 ## Running in the background
 
-Closing the main window quits Syphr unless a download is running or queued; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one opens its details window. Closing a details window leaves the download running. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
+Closing the main window quits Syphr unless a download is running or queued, or waits in a queue with a schedule; then the app hides on macOS and minimizes elsewhere, so downloads keep going (`close_main_window`). The tray icon (`tray::install`, built on `tray-icon`) lists ongoing downloads with their progress, running ones first and up to eight, and a click on one opens its details window. Closing a details window leaves the download running. Below them it offers *Show Syphr*, *New Download…*, *Pause All*, *Resume All*, *Open Downloads Folder*, *Settings…* and *Quit Syphr*; on Windows and Linux a left click also brings the window back. On macOS the icon is a template image cut from the app icon's glyph, so the menu bar tints it. Linux uses the StatusNotifierItem (KSNI) backend, which needs no GTK but does need a desktop that shows those icons.
 
 ## Adding a download
 
@@ -39,7 +41,7 @@ Closing the main window quits Syphr unless a download is running or queued; then
    - **Media sites** (`ytdlp::handles`: YouTube, Vimeo, Twitch, SoundCloud, Dailymotion, X) run `yt-dlp -J`. The format list becomes a few choices: *Best quality*, one per resolution, and *Audio only*.
    - **Everything else** gets a one-byte ranged GET (`engine::inspect`) that reports the file name, size, and whether the server supports byte ranges.
 3. The panel shows the result. You can rename the file, pick a quality, and change the save folder.
-4. Submitting adds a `Download` with status `Queued` to the top of the list.
+4. *Start download* adds a `Download` with status `Queued` to the top of the list; *Download later* adds it as `Later`, so it waits for its queue to start. Either way it joins the queue shown in the sidebar, or Main, last in that queue's order.
 
 `kind_for` sorts each download into Video, Music, Document, Program or Archive by extension, which drives the sidebar filters and icons.
 
@@ -60,7 +62,7 @@ Every way below ends in one of three places: one link opens the panel above, fil
 syphr-dl [LINK...] [--dir FOLDER] [--name FILE] [--silent] [--queue-only]
 ```
 
-Links are `http(s)` links or `syphr://add?url=LINK`. `--dir` saves to another folder (a relative path is resolved against the current one), `--name` names the file (one link only), `--silent` adds without the panel, and `--queue-only` adds paused, also without the panel. `--help` prints this; `--fetch-tools DIR` is the release build's step (see [tools.md](tools.md)).
+Links are `http(s)` links or `syphr://add?url=LINK`. `--dir` saves to another folder (a relative path is resolved against the current one), `--name` names the file (one link only), `--silent` adds without the panel, and `--queue-only` adds them as `Later` in the queue on screen (or Main), also without the panel, so they wait for the queue to start. `--help` prints this; `--fetch-tools DIR` is the release build's step (see [tools.md](tools.md)).
 
 Only one Syphr runs at a time. At startup the app listens on a loopback TCP port and writes the port and a random secret to `instance` in Syphr's folder, readable only by the user. A later launch that finds a running app sends it the request with the secret, and exits; with no links it just brings the window forward. A stale file (after a crash) fails to connect, and that launch starts normally. The updater restarts with `--new-instance`, which skips this so the new version doesn't hand itself to the old one.
 
@@ -74,17 +76,28 @@ Settings → Appearance → *Download list columns* hides Progress, Size, Speed,
 
 Until a column is resized, Name fills the table. After that, the Actions column takes the slack (its buttons stay right-aligned), so dragging an edge moves only the columns to its right, and a column can only grow into that slack: narrow Name first to make room. Name gives width back when the window gets too narrow. `DownloadsTable::layout` computes the widths. During a drag, `follow_drag` resizes Actions through the kit's `fit_col`, never `refresh`, which would reset the kit's column bounds and break the drag; columns are rebuilt only when they change (`stale`). Resized widths are kept in rems for the session.
 
+## Queues and the scheduler
+
+Every download belongs to one queue (`Download::queue`). *Main* (id 1) always exists and can't be deleted; the sidebar's *Queues* section lists it with the queues the user adds (+), and selecting one shows only its downloads, in the order they start (`Download::position`, lower first). There the toolbar offers *Start queue* (`Later` and `Paused` → `Queued`), *Stop queue* (`Downloading` and `Queued` → `Later`) and *Schedule…*, and a row's menu offers *Move up / down / to top / to bottom*. *Move to queue* is in every row's menu and puts the download last in the other queue.
+
+*Schedule…* opens the Queues window, one page per queue: name, start and stop times, the days they apply to (or one date), how many of its downloads run at once (0 follows *Simultaneous downloads*, which still caps all queues together), and what to do when it finishes. Deleting a queue moves its downloads to Main.
+
+`Queue::inside` says whether a time falls in the queue's window: from the start to the stop time on a chosen day (a stop earlier than the start ends the next day), from midnight when there's no start time, and just the start minute when there's no stop time. Each tick `run_schedules` compares that with the last tick: the window opening (or already open when Syphr launches) starts the queue, and it closing stops it. Editing a queue records its current state without acting, so a change never starts or stops a queue by itself.
+
+When a download ends and its queue has nothing left that is `Downloading`, `Queued` or `Later`, the queue's finish action runs: *Quit Syphr*, *Sleep* or *Shut down*. Syphr comes to the front with a 30-second countdown dialog; *Cancel* or Escape stops it. Sleep and shut down call `pmset sleepnow` / `osascript … shut down` on macOS, `rundll32 powrprof.dll,SetSuspendState` / `shutdown /s` on Windows and `systemctl suspend` / `poweroff` on Linux.
+
 ## The pump
 
-`SyphrApp::pump` runs every 500 ms and is the only place jobs start or stop. For each download, oldest first:
+`SyphrApp::pump` runs every 500 ms and is the only place jobs start or stop. It first runs the queue schedules, then goes through the downloads in queue order (`position`, then oldest first):
 
 1. Collect a finished job's result: mark it Completed (with its final path and size) or Failed, and notify.
 2. Reconcile status with the job:
-   - `Queued`/`Downloading` with no running job and a free slot → start a job (`Request` built from current settings).
+   - `Queued`/`Downloading` with no running job and a free slot → start a job (`Request` built from current settings). A slot is free when fewer than *Simultaneous downloads* run in all and fewer than the queue's own limit run in its queue.
    - `Downloading` with no free slot → back to `Queued`.
-   - `Paused`/`Failed`/`Completed`/`Missing` with a running job → stop it.
+   - `Paused`/`Failed`/`Completed`/`Missing`/`Later` with a running job → stop it. `Later` never starts on its own.
    - `Completed` whose file is gone from its saved path → `Missing`, and back once it reappears.
 3. Copy the job's progress (bytes, smoothed speed, per-part fractions) into the row, and add the speed to `speed_history`, which the details window draws as the last minute's graph. The history is in memory only, so it starts empty after a restart.
+4. After the loop, run the finish action of any queue that just finished (see above).
 
 Pausing, resuming, retrying and removing only change `Status` (or remove the row); the pump does the rest on its next tick. Removing a row hands its `Job` to `engine::discard`, which aborts it and deletes `partial/<id>/`. "Remove and delete file…" in the row's menu also deletes the saved file, after a confirmation.
 
@@ -97,7 +110,11 @@ Queued ──slot free──▶ Downloading ──ok──▶ Completed ◀─�
    ▲                   │    │
    └──no slot──────────┘    └──error──▶ Failed ──retry──▶ Queued
                 Paused ◀──pause / resume──▶ Downloading
+Later ──start queue / schedule start──▶ Queued        Later ──start now / resume──▶ Downloading
+Downloading, Queued ──stop queue / schedule stop──▶ Later        Paused ──start queue──▶ Queued
 ```
+
+*Resume all* leaves `Later` downloads alone; they wait for their queue.
 
 ## Notifications
 
@@ -105,7 +122,7 @@ A finished or failed download shows an in-window toast when Syphr is focused, ot
 
 ## Closing
 
-Closing the window quits, unless anything is downloading or queued; see the tray section above for where the app goes then.
+Closing the window quits, unless anything is downloading or queued, or a `Later` download waits in a queue with a schedule; see the tray section above for where the app goes then.
 
 ## Saved list and log
 
@@ -113,7 +130,9 @@ The list and a log per download live in SQLite at `downloads.db` in Syphr's fold
 
 The `log` table gets a line when a download is added, on every status change, with the saved path on completion, and with the error on failure. The engine adds its own lines through `Job::take_log`, which the pump drains each tick: yt-dlp's `[extractor] ...` output and stderr, and for direct links the probe request and response, each part's ranged request and status, where the file goes, and retries. The details window shows it, newest first, open by default.
 
-Downloads that were running or queued when Syphr quit start again on launch. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
+The `queues` table holds each queue's name, schedule (minutes after midnight, a day mask, an optional date), limit and finish action; `Store::save_queues` rewrites it whenever a queue changes. `downloads` gained `queue` and `position` columns: a database from before queues gets them on open, with every download in Main ordered by id. The check looks for the column rather than a schema version.
+
+Downloads that were running or queued when Syphr quit start again on launch; `Later` ones keep waiting. If the database can't be opened, Syphr logs why and keeps the list in memory for that session.
 
 ## Settings
 
@@ -124,7 +143,7 @@ Stored as JSON at `settings.json` in Syphr's folder: `~/Library/Application Supp
 | Theme | System | Bundled themes or follow the system |
 | Font size | 13 (15 on Linux) | 11–20 pt; the whole UI scales in rems. View menu and ⌘= / ⌘- / ⌘0 step it |
 | Download folder | `~/Downloads` | |
-| Max concurrent | 3 | Downloads running at once |
+| Max concurrent | 3 | Downloads running at once, across all queues. Each queue can set a lower limit of its own in the Queues window |
 | Speed limit | 0 (unlimited) | KB/s, shared across one download's connections |
 | Connections | 8 | Byte-range parts for direct links, `-N` for yt-dlp |
 | Proxy | None | Type, host, port, username, password for all traffic; the password is stored as plain text. See [engine.md](engine.md#proxy) |

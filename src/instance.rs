@@ -23,7 +23,7 @@ pub struct AddRequest {
     pub name: Option<String>,
     /// Add without showing the panel.
     pub silent: bool,
-    /// Add paused instead of starting; implies `silent`.
+    /// Add as `Later`, waiting for its queue to start; implies `silent`.
     pub queue_only: bool,
 }
 
@@ -34,7 +34,7 @@ Usage: syphr-dl [LINK...] [--dir FOLDER] [--name FILE] [--silent] [--queue-only]
   --dir FOLDER    save to FOLDER instead of the folder in Settings
   --name FILE     save as FILE (one link only)
   --silent        add without showing the panel
-  --queue-only    add paused, without the panel
+  --queue-only    add to the queue without starting, without the panel
   --new-instance  start even if Syphr is already running
 
 A running Syphr gets the links instead of a second window opening.";

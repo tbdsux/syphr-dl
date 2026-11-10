@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 async-channel = "2.5.0"
+chrono = "0.4.45"
 gpui-kit = { version = "0.8.1", features = ["gpui-fast"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["charset", "http2", "rustls", "socks"] }

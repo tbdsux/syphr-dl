@@ -12,6 +12,7 @@ mod download;
 mod engine;
 mod instance;
 mod links;
+mod queue;
 mod store;
 mod tools;
 mod tray;
@@ -53,7 +54,21 @@ actions!(downloads, [TogglePause, Retry, CopyLinks, Remove, SelectAll, ClearSele
 // The default bundle only has the component icons; these Lucide extras are used for categories.
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [Film, Music, Package, FileArchive, ListChecks, Keyboard, CircleArrowUp, ScrollText, ClipboardPaste]
+    [
+        Film,
+        Music,
+        Package,
+        FileArchive,
+        ListChecks,
+        Keyboard,
+        CircleArrowUp,
+        ScrollText,
+        ClipboardPaste,
+        ListOrdered,
+        CalendarClock,
+        ArrowUpToLine,
+        ArrowDownToLine
+    ]
 );
 
 /// The app icon, for `img()`.
