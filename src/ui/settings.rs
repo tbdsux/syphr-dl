@@ -53,6 +53,10 @@ pub struct AppSettings {
     pub notify_on_complete: bool,
     /// Opening the link field fills it with a copied link.
     pub auto_paste: bool,
+    /// Offer links copied in other apps while Syphr runs.
+    pub watch_clipboard: bool,
+    /// File types the clipboard watcher offers and the grabber keeps, separated by spaces.
+    pub watch_types: String,
     pub show_quick_download: bool,
     pub check_updates: bool,
     /// Download list columns turned off, by column id.
@@ -85,6 +89,8 @@ impl Default for AppSettings {
             ytdlp_args: String::new(),
             notify_on_complete: true,
             auto_paste: true,
+            watch_clipboard: true,
+            watch_types: crate::links::DEFAULT_TYPES.into(),
             show_quick_download: true,
             check_updates: true,
             hidden_columns: BTreeSet::new(),
@@ -521,6 +527,29 @@ impl Render for SettingsView {
                     .default_value(defaults.auto_paste),
                 )
                 .description("Opening the link field (⌘N) fills it with the last copied link."),
+                SettingItem::new(
+                    "Watch the clipboard",
+                    SettingField::switch(
+                        |cx: &App| AppSettings::get(cx).watch_clipboard,
+                        |value: bool, cx: &mut App| AppSettings::update(cx, |s| s.watch_clipboard = value),
+                    )
+                    .default_value(defaults.watch_clipboard),
+                )
+                .description("Copying a file or video link in another app offers to download it."),
+                SettingItem::new(
+                    "File types to catch",
+                    SettingField::input(
+                        |cx: &App| AppSettings::get(cx).watch_types.clone().into(),
+                        |value: SharedString, cx: &mut App| {
+                            AppSettings::update(cx, |s| s.watch_types = value.to_string())
+                        },
+                    )
+                    .default_value(defaults.watch_types.clone()),
+                )
+                .layout(Axis::Vertical)
+                .description(
+                    "Extensions, separated by spaces. Video sites are always caught. Grab Links from Page starts with these.",
+                ),
                 SettingItem::new(
                     "Show Quick download",
                     SettingField::switch(

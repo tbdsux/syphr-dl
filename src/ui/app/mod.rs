@@ -15,9 +15,12 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, Source, Status};
 use crate::engine::{Job, Request};
+use crate::instance::AddRequest;
+use crate::links;
 use crate::queue::{MAIN, Queue};
 use crate::store::Store;
-use crate::ui::add_download::{AddDownload, AddEvent, kind_for};
+use crate::ui::add_download::{AddDownload, AddEvent, kind_for, unchecked_download};
+use crate::ui::batch::{BatchAdd, BatchKind, BatchSubmit};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
 
@@ -89,6 +92,8 @@ pub struct SyphrApp {
     store: Store,
     /// Open details windows by download id.
     details: HashMap<u64, AnyWindowHandle>,
+    /// The clipboard text last seen, so each copy is offered once.
+    last_clip: Option<String>,
     queues: Vec<Queue>,
     /// Whether each queue was inside its schedule window on the last tick; a change starts or stops it.
     in_window: HashMap<u64, bool>,
@@ -96,6 +101,9 @@ pub struct SyphrApp {
     /// The countdown before a finished queue's action; dropping it cancels the action.
     countdown: Option<Task<()>>,
     _pump: Task<()>,
+    _watch_clipboard: Task<()>,
+    /// Listens to the open batch dialog.
+    _batch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -161,6 +169,14 @@ impl SyphrApp {
                 }
             }
         });
+        let watch_clipboard = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |this, cx| this.watch_clipboard(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let active = this.read_with(cx, |this, _| this.has_active()).unwrap_or(false);
@@ -188,7 +204,11 @@ impl SyphrApp {
             queues_window: None,
             countdown: None,
             jobs: HashMap::new(),
+            // What was copied before launch isn't new.
+            last_clip: cx.read_from_clipboard().and_then(|item| item.text()),
             _pump: pump,
+            _watch_clipboard: watch_clipboard,
+            _batch: None,
             filter: Filter::All,
             checked: BTreeSet::new(),
             anchor: None,
@@ -561,6 +581,13 @@ impl SyphrApp {
 
     pub fn new_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let auto_paste = AppSettings::get(cx).auto_paste;
+        if auto_paste && self.add.read(cx).url().read(cx).value().is_empty() {
+            let copied = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+            let links = links::parse_list(&copied);
+            if links.len() > 1 {
+                return self.open_batch(BatchKind::List, links, None, window, cx);
+            }
+        }
         self.add.update(cx, |add, cx| {
             if auto_paste && add.url().read(cx).value().is_empty() {
                 add.paste_copied_link(window, cx);
@@ -568,6 +595,147 @@ impl SyphrApp {
             add.focus(window, cx);
             add.set_open(true, cx);
         })
+    }
+
+    /// Offers a newly copied file or video link with a system notification (see `OFFER_TAG`). Copies made while a
+    /// Syphr window is in front are its own, such as Copy links or the link field, and are never offered.
+    fn watch_clipboard(&mut self, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        if text == self.last_clip {
+            return;
+        }
+        self.last_clip = text.clone();
+        let settings = AppSettings::get(cx);
+        if !settings.watch_clipboard || cx.active_window().is_some() {
+            return;
+        }
+        let Some(link) = text.and_then(|text| links::offered_link(&text, &settings.watch_types)) else { return };
+        cx.show_system_notification(SystemNotification {
+            tag: format!("{OFFER_TAG}{link}").into(),
+            title: "Download the copied link?".into(),
+            body: link.into(),
+            actions: vec![SystemNotificationAction { id: DOWNLOAD_ACTION.into(), label: "Download".into() }],
+        });
+    }
+
+    /// Adds links from outside the window: the command line, another launch, a `syphr://` link or a notification.
+    pub fn take_request(&mut self, request: AddRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let AddRequest { urls, dir, name, silent, queue_only } = request;
+        match urls.as_slice() {
+            [] => {}
+            _ if silent || queue_only => {
+                let folder = dir.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+                let status = if queue_only { Status::Later } else { Status::Queued };
+                self.add_links(&urls, &folder, name.filter(|_| urls.len() == 1), status, cx);
+            }
+            [url] => self.add.update(cx, |add, cx| {
+                add.fill(url.clone(), dir, name, window, cx);
+                add.focus(window, cx);
+            }),
+            _ => self.open_batch(BatchKind::List, urls, dir, window, cx),
+        }
+    }
+
+    /// Adds the links in dropped or imported files: one opens the panel, more the batch dialog.
+    pub fn take_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let mut urls: Vec<String> = Vec::new();
+        for link in paths.iter().flat_map(|path| links::links_in_file(path)) {
+            if !urls.contains(&link) {
+                urls.push(link);
+            }
+        }
+        if urls.is_empty() {
+            window.push_notification("No links found. Use a text file with one link per line, or a web shortcut.", cx);
+            return;
+        }
+        crate::show_main_window(cx);
+        self.take_request(AddRequest { urls, ..Default::default() }, window, cx);
+    }
+
+    pub fn import_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = picked.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(Ok(Some(paths))) => this.take_files(&paths, window, cx),
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(e)) => window.push_notification(format!("Couldn't open the file picker: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Saves the selected downloads' links, or every download's, one per line.
+    pub fn export_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let urls: Vec<String> = self
+            .downloads
+            .iter()
+            .filter(|d| self.checked.is_empty() || self.checked.contains(&d.id))
+            .rev()
+            .map(|d| d.url.to_string())
+            .collect();
+        if urls.is_empty() {
+            window.push_notification("There are no downloads to export.", cx);
+            return;
+        }
+        let dir = expand_home(&AppSettings::get(cx).download_dir);
+        let picked = cx.prompt_for_new_path(&dir, Some("Syphr links.txt"));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = picked.await else { return };
+            let message = match std::fs::write(&path, urls.join("\n") + "\n") {
+                Ok(()) if urls.len() == 1 => "Exported 1 link".to_string(),
+                Ok(()) => format!("Exported {} links", urls.len()),
+                Err(e) => format!("Couldn't save the links: {e}"),
+            };
+            cx.update(|window, cx| window.push_notification(message, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Opens the batch dialog; `folder` defaults to the one in Settings.
+    pub fn open_batch(
+        &mut self,
+        kind: BatchKind,
+        links: Vec<String>,
+        folder: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = folder.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+        let view = cx.new(|cx| BatchAdd::new(kind, links, folder, window, cx));
+        self._batch = Some(cx.subscribe_in(&view, window, |this, _, BatchSubmit { urls, folder }, window, cx| {
+            this.add_links(urls, folder, None, Status::Queued, cx);
+            window.close_dialog(cx);
+        }));
+        window.open_dialog(cx, move |dialog, window, _| {
+            dialog.title(kind.title()).w(window.rem_size() * 40.).child(view.clone())
+        });
+    }
+
+    /// Adds `urls` without looking them up to the queue on screen, or Main, in order.
+    fn add_links(
+        &mut self,
+        urls: &[String],
+        folder: &str,
+        file_name: Option<String>,
+        status: Status,
+        cx: &mut Context<Self>,
+    ) {
+        let queue = if let Filter::Queue(queue) = self.filter { queue } else { MAIN };
+        for url in urls {
+            let mut download = unchecked_download(self.next_id, url, folder, file_name.clone(), status);
+            download.position = self.next_position();
+            download.queue = queue;
+            self.downloads.insert(0, download);
+            self.next_id += 1;
+        }
+        self.sync_table(cx);
     }
 
     /// Adds to the queue on screen, or Main; `later` adds it without starting.
@@ -590,6 +758,11 @@ impl SyphrApp {
         }
     }
 }
+
+/// Tags the clipboard watcher's notifications; the copied link follows it.
+pub const OFFER_TAG: &str = "add-link:";
+/// The offer's button that adds the link without opening the panel.
+pub const DOWNLOAD_ACTION: &str = "download";
 
 /// A toast while the window is in front, otherwise the system notification center.
 fn announce(id: u64, title: &'static str, body: SharedString, window: &mut Window, cx: &mut App) {

@@ -20,6 +20,9 @@ sha2 = "0.10.9"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "process", "io-util", "macros"] }
 tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 
+[dev-dependencies]
+gpui-kit = { version = "0.8.1", features = ["gpui-fast", "test-support"] }
+
 # wgpu always starts its GL backend, and khronos-egl 6.0.0 (the latest) panics when EGL finds no display.
 # With the patch, wgpu skips GL and uses Vulkan. Drop this once a fixed release is out.
 [patch.crates-io]

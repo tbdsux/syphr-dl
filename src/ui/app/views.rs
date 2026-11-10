@@ -17,11 +17,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::download::{Kind, Status, format_bytes};
+use crate::ui::batch::BatchKind;
 use crate::ui::downloads_table::{DownloadsTable, kind_color, kind_icon};
 use crate::ui::settings::AppSettings;
 use crate::{
-    ClearSelection, CloseWindow, CopyLinks, FocusSearch, NewDownload, OpenSettings, Remove, Retry, SelectAll,
-    TogglePause,
+    BatchDownload, ClearSelection, CloseWindow, CopyLinks, ExportLinks, FocusSearch, GrabLinks, ImportLinks,
+    NewDownload, OpenSettings, Remove, Retry, SelectAll, TogglePause,
 };
 
 use super::{Filter, SyphrApp};
@@ -507,6 +508,14 @@ impl Render for SyphrApp {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &NewDownload, window, cx| this.new_download(window, cx)))
+            .on_action(cx.listener(|this, _: &BatchDownload, window, cx| {
+                this.open_batch(BatchKind::Pattern, Vec::new(), None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GrabLinks, window, cx| {
+                this.open_batch(BatchKind::Page, Vec::new(), None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ImportLinks, window, cx| this.import_links(window, cx)))
+            .on_action(cx.listener(|this, _: &ExportLinks, window, cx| this.export_links(window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 let handle = this.search.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
@@ -540,6 +549,11 @@ impl Render for SyphrApp {
                         .rounded(cx.theme().radius_lg)
                         .bg(cx.theme().background)
                         .overflow_hidden()
+                        // Dropped link lists and web shortcuts; GPUI only delivers files, not dragged text.
+                        .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                            this.take_files(paths.paths(), window, cx)
+                        }))
                         .child(self.render_toolbar(cx))
                         .when(self.checked.len() > 1, |this| this.child(self.render_bulk_bar(cx)))
                         .child({

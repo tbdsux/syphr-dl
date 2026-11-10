@@ -12,6 +12,7 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com).
 - **Pause and resume.** A paused download keeps its finished parts and continues where it stopped.
 - **Video and audio.** YouTube, Vimeo, Twitch, SoundCloud, Dailymotion and X links show a list of qualities (1080p60, 720p, audio only, …) with estimated sizes.
 - **Queue.** Downloads beyond the concurrent limit wait their turn, oldest first.
+- **Many ways to add links.** Copy a file or video link anywhere and Syphr offers to download it; drop or import a list of links; batch-download a pattern like `img[001-120].jpg`; grab every file linked from a page; or run `syphr-dl <link>` from a terminal.
 - **Speed limit**, per-download connection count, and a chosen save folder.
 - **Tools installed for you.** If yt-dlp or ffmpeg is missing, Syphr downloads checksum-verified copies into its own folder. Your own installs (Homebrew or PATH) are used first.
 - **Updates itself.** When a new release is out, click **Update to vX.Y.Z** in the sidebar; Syphr downloads it, checks its SHA-256, and restarts.
