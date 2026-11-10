@@ -11,6 +11,8 @@ pub enum Status {
     Downloading,
     Paused,
     Queued,
+    /// Waits in its queue until the queue starts, by hand or on schedule.
+    Later,
     Completed,
     /// Completed, but the file is no longer where it was saved.
     Missing,
@@ -62,6 +64,10 @@ pub struct Download {
     pub limit_kbps: Option<u64>,
     /// Login and extra headers for every request.
     pub access: crate::engine::Access,
+    /// The `Queue` it belongs to.
+    pub queue: u64,
+    /// Lower starts first; see `queue::reorder`.
+    pub position: i64,
 }
 
 impl Download {
@@ -137,6 +143,8 @@ mod tests {
             speed_history: Vec::new(),
             limit_kbps: None,
             access: Default::default(),
+            queue: crate::queue::MAIN,
+            position: 1,
         };
         assert!((d.progress() - 64.58).abs() < 0.1);
         assert_eq!(d.eta_secs(), Some(4));

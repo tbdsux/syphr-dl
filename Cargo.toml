@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 async-channel = "2.5.0"
+chrono = "0.4.45"
 gpui-kit = { version = "0.8.1", features = ["gpui-fast"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["charset", "http2", "rustls", "socks"] }
@@ -19,6 +20,9 @@ sha2 = "0.10.9"
 suppaftp = { version = "12.2.1", default-features = false, features = ["tokio"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "process", "io-util", "macros"] }
 tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
+
+[dev-dependencies]
+gpui-kit = { version = "0.8.1", features = ["gpui-fast", "test-support"] }
 
 # wgpu always starts its GL backend, and khronos-egl 6.0.0 (the latest) panics when EGL finds no display.
 # With the patch, wgpu skips GL and uses Vulkan. Drop this once a fixed release is out.

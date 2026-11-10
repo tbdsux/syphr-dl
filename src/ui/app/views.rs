@@ -17,11 +17,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::download::{Kind, Status, format_bytes};
+use crate::ui::batch::BatchKind;
 use crate::ui::downloads_table::{DownloadsTable, kind_color, kind_icon};
 use crate::ui::settings::AppSettings;
 use crate::{
-    ClearSelection, CloseWindow, CopyLinks, FocusSearch, NewDownload, OpenSettings, Remove, Retry, SelectAll,
-    TogglePause,
+    BatchDownload, ClearSelection, CloseWindow, CopyLinks, ExportLinks, FocusSearch, GrabLinks, ImportLinks,
+    NewDownload, OpenSettings, Remove, Retry, SelectAll, TogglePause,
 };
 
 use super::{Filter, SyphrApp};
@@ -101,7 +102,7 @@ impl SyphrApp {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let total = self.downloads.len().max(1) as f32;
         let filter_row =
-            |label: &'static str, icon: Icon, filter: Filter, tint: Option<Hsla>, cx: &mut Context<Self>| {
+            |label: SharedString, icon: Icon, filter: Filter, tint: Option<Hsla>, cx: &mut Context<Self>| {
                 let count = self.downloads.iter().filter(|d| filter.matches(d)).count();
                 let active = self.filter == filter;
                 let theme = cx.theme();
@@ -127,7 +128,7 @@ impl SyphrApp {
             };
         let kind_row = |label: &'static str, kind: Kind, cx: &mut Context<Self>| {
             let color = kind_color(kind, cx);
-            filter_row(label, kind_icon(kind), Filter::Kind(kind), Some(color), cx)
+            filter_row(label.into(), kind_icon(kind), Filter::Kind(kind), Some(color), cx)
         };
         let theme = cx.theme();
         let (primary, success, danger) = (theme.primary, theme.success, theme.danger);
@@ -148,23 +149,23 @@ impl SyphrApp {
                         v_flex()
                             .gap_0p5()
                             .child(group_title("Downloads", cx))
-                            .child(filter_row("All", Icon::new(IconName::Inbox), Filter::All, None, cx))
+                            .child(filter_row("All".into(), Icon::new(IconName::Inbox), Filter::All, None, cx))
                             .child(filter_row(
-                                "Active",
+                                "Active".into(),
                                 Icon::new(IconName::ArrowDown),
                                 Filter::Active,
                                 Some(primary),
                                 cx,
                             ))
                             .child(filter_row(
-                                "Completed",
+                                "Completed".into(),
                                 Icon::new(IconName::CircleCheck),
                                 Filter::Completed,
                                 Some(success),
                                 cx,
                             ))
                             .child(filter_row(
-                                "Failed",
+                                "Failed".into(),
                                 Icon::new(IconName::CircleX),
                                 Filter::Failed,
                                 Some(danger),
@@ -180,6 +181,31 @@ impl SyphrApp {
                             .child(kind_row("Documents", Kind::Document, cx))
                             .child(kind_row("Programs", Kind::Program, cx))
                             .child(kind_row("Archives", Kind::Archive, cx)),
+                    )
+                    .child(
+                        // Its own id, so a queue named like a category row keeps its own hover and click state.
+                        v_flex()
+                            .id("queues")
+                            .gap_0p5()
+                            .child(
+                                group_title("Queues", cx).justify_between().pr_3().child(
+                                    Button::new("new-queue")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Plus)
+                                        .tooltip("New queue")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let id = this.add_queue(cx);
+                                            this.filter = Filter::Queue(id);
+                                            this.sync_table(cx);
+                                            this.open_queues(Some(id), cx);
+                                        })),
+                                ),
+                            )
+                            .children(self.queues.iter().map(|q| {
+                                let icon = if q.scheduled() { Lucide::CalendarClock } else { Lucide::ListOrdered };
+                                filter_row(q.name.clone().into(), Icon::new(icon), Filter::Queue(q.id), None, cx)
+                            })),
                     )
                     .overflow_y_scrollbar(),
             )
@@ -265,6 +291,17 @@ impl SyphrApp {
             .into_iter()
             .filter(|(n, _)| *n > 0 && *n != total)
             .fold(summary, |s, (n, what)| format!("{s}, {n} {what}"));
+        let queue = match self.filter {
+            Filter::Queue(id) => self.queues.iter().find(|q| q.id == id),
+            _ => None,
+        };
+        let (title, summary): (SharedString, String) = match queue {
+            Some(q) => {
+                let schedule = super::queues::schedule_summary(q, chrono::Local::now().naive_local());
+                (q.name.clone().into(), format!("{summary} · {schedule}"))
+            }
+            None => (self.filter.title().into(), summary),
+        };
         h_flex()
             .gap_1()
             .px_4()
@@ -272,33 +309,66 @@ impl SyphrApp {
             .child(
                 v_flex()
                     .mr_3()
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(self.filter.title()))
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(summary)),
+                    .min_w_0()
+                    .child(div().truncate().text_lg().font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(div().truncate().text_xs().text_color(cx.theme().muted_foreground).child(summary)),
             )
             .child(div().flex_1())
-            .child(
-                Button::new("resume-all")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Play)
-                    .label("Resume all")
-                    .on_click(cx.listener(|this, _, _, cx| this.resume_all(cx))),
-            )
-            .child(
-                Button::new("pause-all")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Pause)
-                    .label("Pause all")
-                    .on_click(cx.listener(|this, _, _, cx| this.pause_all(cx))),
-            )
+            .map(|this| match queue {
+                Some(q) => this.children(self.render_queue_actions(q.id, cx)),
+                None => this.children(self.render_list_actions(cx)),
+            })
             .child(Input::new(&self.search).small().prefix(IconName::Search).cleanable(true).ml_2().w(rems(17.)))
+    }
+
+    fn render_list_actions(&self, cx: &mut Context<Self>) -> [Button; 2] {
+        [
+            Button::new("resume-all")
+                .small()
+                .ghost()
+                .icon(IconName::Play)
+                .label("Resume all")
+                .on_click(cx.listener(|this, _, _, cx| this.resume_all(cx))),
+            Button::new("pause-all")
+                .small()
+                .ghost()
+                .icon(IconName::Pause)
+                .label("Pause all")
+                .on_click(cx.listener(|this, _, _, cx| this.pause_all(cx))),
+        ]
+    }
+
+    /// Start and stop act on the queue on screen; its schedule is edited in the Queues window.
+    fn render_queue_actions(&self, id: u64, cx: &mut Context<Self>) -> [Button; 3] {
+        let has = |statuses: &[Status]| self.downloads.iter().any(|d| d.queue == id && statuses.contains(&d.status));
+        [
+            Button::new("start-queue")
+                .small()
+                .ghost()
+                .icon(IconName::Play)
+                .label("Start queue")
+                .disabled(!has(&[Status::Later, Status::Paused]))
+                .on_click(cx.listener(move |this, _, _, cx| this.start_queue(id, cx))),
+            Button::new("stop-queue")
+                .small()
+                .ghost()
+                .icon(IconName::Square)
+                .label("Stop queue")
+                .disabled(!has(&[Status::Downloading, Status::Queued]))
+                .on_click(cx.listener(move |this, _, _, cx| this.stop_queue(id, cx))),
+            Button::new("edit-queue")
+                .small()
+                .ghost()
+                .icon(Icon::new(Lucide::CalendarClock))
+                .label("Schedule…")
+                .on_click(cx.listener(move |this, _, _, cx| this.open_queues(Some(id), cx))),
+        ]
     }
 
     fn render_bulk_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let pausable = self.checked_with(&[Status::Downloading, Status::Queued]);
-        let resumable = self.checked_with(&[Status::Paused]);
+        let resumable = self.checked_with(&[Status::Paused, Status::Later]);
         let failed = self.checked_with(&[Status::Failed]);
         let count_label = |verb: &str, n: usize| if n > 0 { format!("{verb} {n}") } else { verb.to_string() };
         h_flex()
@@ -320,7 +390,7 @@ impl SyphrApp {
                     .label(count_label("Resume", resumable))
                     .disabled(resumable == 0)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_checked_status(&[Status::Paused], Status::Downloading, cx)
+                        this.set_checked_status(&[Status::Paused, Status::Later], Status::Downloading, cx)
                     })),
             )
             .child(
@@ -438,6 +508,14 @@ impl Render for SyphrApp {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &NewDownload, window, cx| this.new_download(window, cx)))
+            .on_action(cx.listener(|this, _: &BatchDownload, window, cx| {
+                this.open_batch(BatchKind::Pattern, Vec::new(), None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GrabLinks, window, cx| {
+                this.open_batch(BatchKind::Page, Vec::new(), None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ImportLinks, window, cx| this.import_links(window, cx)))
+            .on_action(cx.listener(|this, _: &ExportLinks, window, cx| this.export_links(window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 let handle = this.search.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
@@ -471,6 +549,11 @@ impl Render for SyphrApp {
                         .rounded(cx.theme().radius_lg)
                         .bg(cx.theme().background)
                         .overflow_hidden()
+                        // Dropped link lists and web shortcuts; GPUI only delivers files, not dragged text.
+                        .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                            this.take_files(paths.paths(), window, cx)
+                        }))
                         .child(self.render_toolbar(cx))
                         .when(self.checked.len() > 1, |this| this.child(self.render_bulk_bar(cx)))
                         .child({

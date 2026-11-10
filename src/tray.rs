@@ -238,6 +238,8 @@ mod tests {
             speed_history: Vec::new(),
             limit_kbps: None,
             access: Default::default(),
+            queue: crate::queue::MAIN,
+            position: 0,
         }
     }
 

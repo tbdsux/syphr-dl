@@ -15,12 +15,17 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, Source, Status};
 use crate::engine::{Job, Request};
+use crate::instance::AddRequest;
+use crate::links;
+use crate::queue::{MAIN, Queue};
 use crate::store::Store;
-use crate::ui::add_download::{AddDownload, AddEvent, kind_for};
+use crate::ui::add_download::{AddDownload, AddEvent, kind_for, unchecked_download};
+use crate::ui::batch::{BatchAdd, BatchKind, BatchSubmit};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
 
 mod details;
+mod queues;
 mod selection;
 mod views;
 
@@ -33,6 +38,7 @@ enum Filter {
     Completed,
     Failed,
     Kind(Kind),
+    Queue(u64),
 }
 
 impl Filter {
@@ -47,16 +53,20 @@ impl Filter {
             Filter::Kind(Kind::Document) => "Documents",
             Filter::Kind(Kind::Program) => "Programs",
             Filter::Kind(Kind::Archive) => "Archives",
+            Filter::Queue(_) => "Queue",
         }
     }
 
     fn matches(self, d: &Download) -> bool {
         match self {
             Filter::All => true,
-            Filter::Active => matches!(d.status, Status::Downloading | Status::Paused | Status::Queued),
+            Filter::Active => {
+                matches!(d.status, Status::Downloading | Status::Paused | Status::Queued | Status::Later)
+            }
             Filter::Completed => matches!(d.status, Status::Completed | Status::Missing),
             Filter::Failed => d.status == Status::Failed,
             Filter::Kind(kind) => d.kind == kind,
+            Filter::Queue(id) => d.queue == id,
         }
     }
 }
@@ -82,7 +92,18 @@ pub struct SyphrApp {
     store: Store,
     /// Open details windows by download id.
     details: HashMap<u64, (AnyWindowHandle, WeakEntity<details::DownloadDetails>)>,
+    /// The clipboard text last seen, so each copy is offered once.
+    last_clip: Option<String>,
+    queues: Vec<Queue>,
+    /// Whether each queue was inside its schedule window on the last tick; a change starts or stops it.
+    in_window: HashMap<u64, bool>,
+    queues_window: Option<AnyWindowHandle>,
+    /// The countdown before a finished queue's action; dropping it cancels the action.
+    countdown: Option<Task<()>>,
     _pump: Task<()>,
+    _watch_clipboard: Task<()>,
+    /// Listens to the open batch dialog.
+    _batch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,7 +114,10 @@ impl SyphrApp {
         let weak = cx.entity().downgrade();
         let table = cx.new(|cx| TableState::new(DownloadsTable::new(weak), window, cx));
         let subscriptions = vec![
-            cx.subscribe_in(&add, window, |this, _, AddEvent::Submit, window, cx| this.submit_add(window, cx)),
+            cx.subscribe_in(&add, window, |this, _, event, window, cx| match event {
+                AddEvent::Submit => this.submit_add(false, window, cx),
+                AddEvent::Later => this.submit_add(true, window, cx),
+            }),
             cx.observe(&add, |_, _, cx| cx.notify()),
             cx.observe_global::<AppSettings>(|this, cx| this.sync_table(cx)),
             cx.subscribe(&search, |this, _, event, cx| {
@@ -145,6 +169,14 @@ impl SyphrApp {
                 }
             }
         });
+        let watch_clipboard = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |this, cx| this.watch_clipboard(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let active = this.read_with(cx, |this, _| this.has_active()).unwrap_or(false);
@@ -158,13 +190,25 @@ impl SyphrApp {
             eprintln!("Couldn't read the download list: {err}");
             Vec::new()
         });
+        let queues = store.load_queues().unwrap_or_else(|err| {
+            eprintln!("Couldn't read the queues: {err}");
+            vec![Queue::new(MAIN, "Main")]
+        });
         let mut this = Self {
             next_id: store.next_id(),
             downloads,
             store,
             details: HashMap::new(),
+            queues,
+            in_window: HashMap::new(),
+            queues_window: None,
+            countdown: None,
             jobs: HashMap::new(),
+            // What was copied before launch isn't new.
+            last_clip: cx.read_from_clipboard().and_then(|item| item.text()),
             _pump: pump,
+            _watch_clipboard: watch_clipboard,
+            _batch: None,
             filter: Filter::All,
             checked: BTreeSet::new(),
             anchor: None,
@@ -184,8 +228,13 @@ impl SyphrApp {
         &self.downloads
     }
 
+    /// Running or queued work, or work waiting for a schedule, which needs the app running to start.
     fn has_active(&self) -> bool {
-        self.downloads.iter().any(|d| matches!(d.status, Status::Downloading | Status::Queued))
+        self.downloads.iter().any(|d| match d.status {
+            Status::Downloading | Status::Queued => true,
+            Status::Later => self.queues.iter().any(|q| q.id == d.queue && q.scheduled()),
+            _ => false,
+        })
     }
 
     /// Close Window and the Linux close button, which bypass the platform's should-close check.
@@ -213,10 +262,14 @@ impl SyphrApp {
         let anchor = self.anchor.filter(|id| self.checked.contains(id));
         let checked = self.checked.clone();
         let hidden = AppSettings::get(cx).hidden_columns.clone();
+        let queue_order = matches!(self.filter, Filter::Queue(_));
+        let queues: Vec<(u64, SharedString)> = self.queues.iter().map(|q| (q.id, q.name.clone().into())).collect();
         let mut own_events = 0;
         self.table.update(cx, |table, cx| {
             let d = table.delegate_mut();
             d.rows = rows;
+            d.queue_order = queue_order;
+            d.queues = queues;
             d.sort_rows();
             d.set_hidden(&hidden);
             d.checked = checked;
@@ -297,7 +350,7 @@ impl SyphrApp {
         if self.checked_with(&[Status::Downloading, Status::Queued]) > 0 {
             self.set_checked_status(&[Status::Downloading, Status::Queued], Status::Paused, cx);
         } else {
-            self.set_checked_status(&[Status::Paused], Status::Downloading, cx);
+            self.set_checked_status(&[Status::Paused, Status::Later], Status::Downloading, cx);
         }
     }
 
@@ -385,15 +438,23 @@ impl SyphrApp {
             settings.notify_on_complete,
         );
         let mut active = self.jobs.values().filter(|j| j.is_running()).count();
-        let mut changed = false;
-        // Oldest first, so the queue runs in the order downloads were added.
-        for d in self.downloads.iter_mut().rev() {
+        let mut changed = self.run_schedules(chrono::Local::now().naive_local());
+        let mut in_queue: HashMap<u64, usize> = HashMap::new();
+        for d in self.downloads.iter().filter(|d| self.jobs.get(&d.id).is_some_and(Job::is_running)) {
+            *in_queue.entry(d.queue).or_default() += 1;
+        }
+        // Queues that had a download end this tick; any left with nothing to run have finished.
+        let mut ended = BTreeSet::new();
+        // In queue order, so each queue runs its downloads in the order the user arranged.
+        for i in crate::queue::start_order(&self.downloads) {
+            let d = &mut self.downloads[i];
             let job = self.jobs.entry(d.id).or_default();
             for line in job.take_log() {
                 self.store.log(d.id, &line);
             }
             if let Some(result) = job.take_result() {
                 changed = true;
+                ended.insert(d.queue);
                 d.bytes_per_sec = 0;
                 match result {
                     Ok(path) => {
@@ -417,8 +478,11 @@ impl SyphrApp {
             }
             let running = job.is_running();
             let limit_bps = d.limit_kbps.unwrap_or(default_kbps) * 1024;
+            let queue_max = self.queues.iter().find(|q| q.id == d.queue).map_or(0, |q| q.max_concurrent as usize);
+            let queue_running = in_queue.entry(d.queue).or_default();
+            let room = active < max && (queue_max == 0 || *queue_running < queue_max);
             match d.status {
-                Status::Downloading | Status::Queued if !running && active < max => {
+                Status::Downloading | Status::Queued if !running && room => {
                     job.start(Request {
                         id: d.id,
                         url: d.url.to_string(),
@@ -437,15 +501,24 @@ impl SyphrApp {
                     });
                     d.status = Status::Downloading;
                     active += 1;
+                    *queue_running += 1;
                     changed = true;
                 }
                 Status::Downloading if !running => {
                     d.status = Status::Queued;
                     changed = true;
                 }
-                Status::Paused | Status::Failed | Status::Completed | Status::Missing | Status::Queued if running => {
+                Status::Paused
+                | Status::Failed
+                | Status::Completed
+                | Status::Missing
+                | Status::Queued
+                | Status::Later
+                    if running =>
+                {
                     job.stop();
                     active -= 1;
+                    *queue_running = queue_running.saturating_sub(1);
                     changed = true;
                 }
                 Status::Completed | Status::Missing => {
@@ -478,6 +551,11 @@ impl SyphrApp {
         if changed {
             self.sync_table(cx);
         }
+        for queue in ended {
+            if !crate::queue::pending(&self.downloads, queue) {
+                self.queue_finished(queue, window, cx);
+            }
+        }
     }
 
     pub fn remove(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -498,6 +576,7 @@ impl SyphrApp {
         self.set_all(&[Status::Downloading, Status::Queued], Status::Paused, cx);
     }
 
+    /// Leaves `Later` downloads alone: they wait for their queue.
     pub fn resume_all(&mut self, cx: &mut Context<Self>) {
         self.set_all(&[Status::Paused], Status::Downloading, cx);
     }
@@ -512,6 +591,13 @@ impl SyphrApp {
 
     pub fn new_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let auto_paste = AppSettings::get(cx).auto_paste;
+        if auto_paste && self.add.read(cx).url().read(cx).value().is_empty() {
+            let copied = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+            let links = links::parse_list(&copied);
+            if links.len() > 1 {
+                return self.open_batch(BatchKind::List, links, None, window, cx);
+            }
+        }
         self.add.update(cx, |add, cx| {
             if auto_paste && add.url().read(cx).value().is_empty() {
                 add.paste_copied_link(window, cx);
@@ -521,9 +607,156 @@ impl SyphrApp {
         })
     }
 
-    fn submit_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Offers a newly copied file or video link with a system notification (see `OFFER_TAG`). Copies made while a
+    /// Syphr window is in front are its own, such as Copy links or the link field, and are never offered.
+    fn watch_clipboard(&mut self, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        if text == self.last_clip {
+            return;
+        }
+        self.last_clip = text.clone();
+        let settings = AppSettings::get(cx);
+        if !settings.watch_clipboard || cx.active_window().is_some() {
+            return;
+        }
+        let Some(link) = text.and_then(|text| links::offered_link(&text, &settings.watch_types)) else { return };
+        cx.show_system_notification(SystemNotification {
+            tag: format!("{OFFER_TAG}{link}").into(),
+            title: "Download the copied link?".into(),
+            body: link.into(),
+            actions: vec![SystemNotificationAction { id: DOWNLOAD_ACTION.into(), label: "Download".into() }],
+        });
+    }
+
+    /// Adds links from outside the window: the command line, another launch, a `syphr://` link or a notification.
+    pub fn take_request(&mut self, request: AddRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let AddRequest { urls, dir, name, silent, queue_only } = request;
+        match urls.as_slice() {
+            [] => {}
+            _ if silent || queue_only => {
+                let folder = dir.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+                let status = if queue_only { Status::Later } else { Status::Queued };
+                self.add_links(&urls, &folder, name.filter(|_| urls.len() == 1), status, cx);
+            }
+            [url] => self.add.update(cx, |add, cx| {
+                add.fill(url.clone(), dir, name, window, cx);
+                add.focus(window, cx);
+            }),
+            _ => self.open_batch(BatchKind::List, urls, dir, window, cx),
+        }
+    }
+
+    /// Adds the links in dropped or imported files: one opens the panel, more the batch dialog.
+    pub fn take_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let mut urls: Vec<String> = Vec::new();
+        for link in paths.iter().flat_map(|path| links::links_in_file(path)) {
+            if !urls.contains(&link) {
+                urls.push(link);
+            }
+        }
+        if urls.is_empty() {
+            window.push_notification("No links found. Use a text file with one link per line, or a web shortcut.", cx);
+            return;
+        }
+        crate::show_main_window(cx);
+        self.take_request(AddRequest { urls, ..Default::default() }, window, cx);
+    }
+
+    pub fn import_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = picked.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(Ok(Some(paths))) => this.take_files(&paths, window, cx),
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(e)) => window.push_notification(format!("Couldn't open the file picker: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Saves the selected downloads' links, or every download's, one per line.
+    pub fn export_links(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let urls: Vec<String> = self
+            .downloads
+            .iter()
+            .filter(|d| self.checked.is_empty() || self.checked.contains(&d.id))
+            .rev()
+            .map(|d| d.url.to_string())
+            .collect();
+        if urls.is_empty() {
+            window.push_notification("There are no downloads to export.", cx);
+            return;
+        }
+        let dir = expand_home(&AppSettings::get(cx).download_dir);
+        let picked = cx.prompt_for_new_path(&dir, Some("Syphr links.txt"));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = picked.await else { return };
+            let message = match std::fs::write(&path, urls.join("\n") + "\n") {
+                Ok(()) if urls.len() == 1 => "Exported 1 link".to_string(),
+                Ok(()) => format!("Exported {} links", urls.len()),
+                Err(e) => format!("Couldn't save the links: {e}"),
+            };
+            cx.update(|window, cx| window.push_notification(message, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Opens the batch dialog; `folder` defaults to the one in Settings.
+    pub fn open_batch(
+        &mut self,
+        kind: BatchKind,
+        links: Vec<String>,
+        folder: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = folder.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+        let view = cx.new(|cx| BatchAdd::new(kind, links, folder, window, cx));
+        self._batch = Some(cx.subscribe_in(&view, window, |this, _, BatchSubmit { urls, folder }, window, cx| {
+            this.add_links(urls, folder, None, Status::Queued, cx);
+            window.close_dialog(cx);
+        }));
+        window.open_dialog(cx, move |dialog, window, _| {
+            dialog.title(kind.title()).w(window.rem_size() * 40.).child(view.clone())
+        });
+    }
+
+    /// Adds `urls` without looking them up to the queue on screen, or Main, in order.
+    fn add_links(
+        &mut self,
+        urls: &[String],
+        folder: &str,
+        file_name: Option<String>,
+        status: Status,
+        cx: &mut Context<Self>,
+    ) {
+        let queue = if let Filter::Queue(queue) = self.filter { queue } else { MAIN };
+        for url in urls {
+            let mut download = unchecked_download(self.next_id, url, folder, file_name.clone(), status);
+            download.position = self.next_position();
+            download.queue = queue;
+            self.downloads.insert(0, download);
+            self.next_id += 1;
+        }
+        self.sync_table(cx);
+    }
+
+    /// Adds to the queue on screen, or Main; `later` adds it without starting.
+    fn submit_add(&mut self, later: bool, window: &mut Window, cx: &mut Context<Self>) {
         match self.add.read(cx).request(self.next_id, cx) {
-            Ok(download) => {
+            Ok(mut download) => {
+                download.position = self.next_position();
+                download.queue = if let Filter::Queue(queue) = self.filter { queue } else { MAIN };
+                if later {
+                    download.status = Status::Later;
+                }
                 self.next_id += 1;
                 self.checked = BTreeSet::from([download.id]);
                 self.anchor = Some(download.id);
@@ -535,6 +768,11 @@ impl SyphrApp {
         }
     }
 }
+
+/// Tags the clipboard watcher's notifications; the copied link follows it.
+pub const OFFER_TAG: &str = "add-link:";
+/// The offer's button that adds the link without opening the panel.
+pub const DOWNLOAD_ACTION: &str = "download";
 
 /// A toast while the window is in front, otherwise the system notification center.
 fn announce(id: u64, title: &'static str, body: SharedString, window: &mut Window, cx: &mut App) {

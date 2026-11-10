@@ -285,13 +285,16 @@ fn swap(target: &Path, staged: &Path) -> Result<(), String> {
 }
 
 fn relaunch(app: &Path) -> Result<(), String> {
-    // `-n`, or `open` would just bring this still-running copy forward.
+    // `-n`, or `open` would just bring this still-running copy forward; `--new-instance`, or the new copy would hand
+    // itself to this one and exit.
     let mut cmd = if cfg!(target_os = "macos") {
         let mut open = Command::new("/usr/bin/open");
-        open.arg("-n").arg(app);
+        open.arg("-n").arg(app).args(["--args", "--new-instance"]);
         open
     } else {
-        Command::new(app)
+        let mut cmd = Command::new(app);
+        cmd.arg("--new-instance");
+        cmd
     };
     cmd.spawn().map(drop).map_err(|e| format!("updated, but couldn't restart: {e}"))
 }

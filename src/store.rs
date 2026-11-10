@@ -2,8 +2,11 @@ use std::{collections::HashMap, path::Path, time::SystemTime};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use chrono::{NaiveDate, NaiveTime, Timelike};
+
 use crate::download::{Download, Kind, Source, Status};
 use crate::engine::Access;
+use crate::queue::{Finish, MAIN, Queue};
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -30,6 +33,24 @@ CREATE TABLE IF NOT EXISTS log (
     message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS log_download ON log (download_id);
+CREATE TABLE IF NOT EXISTS queues (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    start_minute INTEGER,
+    stop_minute INTEGER,
+    days INTEGER NOT NULL,
+    date TEXT,
+    max_concurrent INTEGER NOT NULL,
+    on_finish TEXT NOT NULL
+);
+INSERT OR IGNORE INTO queues (id, name, days, max_concurrent, on_finish) VALUES (1, 'Main', 127, 0, 'nothing');
+";
+
+/// Lists from before queues: every download joins Main, in the order it was added.
+const ADD_QUEUES: &str = "
+ALTER TABLE downloads ADD COLUMN queue INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE downloads ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+UPDATE downloads SET position = id;
 ";
 
 /// Columns added since the table was first created; `open` adds the ones an older database lacks.
@@ -63,6 +84,14 @@ impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // Checked by column rather than a schema version, so other migrations can land in any order.
+        let has_queue: bool =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('downloads') WHERE name = 'queue'", [], |r| {
+                r.get(0)
+            })?;
+        if !has_queue {
+            conn.execute_batch(&format!("BEGIN;{ADD_QUEUES}COMMIT;"))?;
+        }
         let have: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('downloads')")?
             .query_map([], |r| r.get(0))?
@@ -77,7 +106,7 @@ impl Store {
     pub fn load(&mut self) -> rusqlite::Result<Vec<Download>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                    file_name, path, limit_kbps, username, password, referer, cookie, user_agent
+                    file_name, path, queue, position, limit_kbps, username, password, referer, cookie, user_agent
              FROM downloads ORDER BY id DESC",
         )?;
         let downloads = stmt
@@ -99,13 +128,15 @@ impl Store {
                     path: r.get::<_, Option<String>>(12)?.map(Into::into),
                     fragments: Vec::new(),
                     speed_history: Vec::new(),
-                    limit_kbps: r.get(13)?,
+                    queue: r.get(13)?,
+                    position: r.get(14)?,
+                    limit_kbps: r.get(15)?,
                     access: Access {
-                        username: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
-                        password: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
-                        referer: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
-                        cookie: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
-                        user_agent: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+                        username: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                        password: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+                        referer: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+                        cookie: r.get::<_, Option<String>>(19)?.unwrap_or_default(),
+                        user_agent: r.get::<_, Option<String>>(20)?.unwrap_or_default(),
                     },
                 })
             })?
@@ -142,8 +173,8 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO downloads
                  (id, name, url, kind, source, status, total_bytes, received_bytes, folder, format, selector,
-                  file_name, path, limit_kbps, username, password, referer, cookie, user_agent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                  file_name, path, queue, position, limit_kbps, username, password, referer, cookie, user_agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     d.id,
                     d.name.as_ref(),
@@ -158,6 +189,8 @@ impl Store {
                     d.selector,
                     d.file_name,
                     d.path.as_ref().map(|p| p.to_string_lossy()),
+                    d.queue,
+                    d.position,
                     d.limit_kbps,
                     d.access.username,
                     d.access.password,
@@ -189,6 +222,59 @@ impl Store {
         Ok(())
     }
 
+    /// Main first, then the others in the order they were made. Main is always there.
+    pub fn load_queues(&self) -> rusqlite::Result<Vec<Queue>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, start_minute, stop_minute, days, date, max_concurrent, on_finish FROM queues ORDER BY id",
+        )?;
+        let minute = |m: Option<u32>| m.and_then(|m| NaiveTime::from_hms_opt(m / 60, m % 60, 0));
+        let queues = stmt
+            .query_map([], |r| {
+                Ok(Queue {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    start: minute(r.get(2)?),
+                    stop: minute(r.get(3)?),
+                    days: r.get(4)?,
+                    date: r.get::<_, Option<String>>(5)?.and_then(|d| d.parse::<NaiveDate>().ok()),
+                    max_concurrent: r.get(6)?,
+                    on_finish: Finish::from_key(&r.get::<_, String>(7)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        debug_assert_eq!(queues.first().map(|q| q.id), Some(MAIN));
+        Ok(queues)
+    }
+
+    /// Replaces the saved queues with `queues`; there are only a handful.
+    pub fn save_queues(&mut self, queues: &[Queue]) {
+        let save = |conn: &mut Connection| -> rusqlite::Result<()> {
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM queues", [])?;
+            let minute = |t: Option<NaiveTime>| t.map(|t| t.hour() * 60 + t.minute());
+            for q in queues {
+                tx.execute(
+                    "INSERT INTO queues (id, name, start_minute, stop_minute, days, date, max_concurrent, on_finish)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        q.id,
+                        q.name,
+                        minute(q.start),
+                        minute(q.stop),
+                        q.days,
+                        q.date.map(|d| d.to_string()),
+                        q.max_concurrent,
+                        q.on_finish.key(),
+                    ],
+                )?;
+            }
+            tx.commit()
+        };
+        if let Err(err) = save(&mut self.conn) {
+            eprintln!("Couldn't save the queues: {err}");
+        }
+    }
+
     pub fn log(&self, id: u64, message: &str) {
         if let Err(err) = append(&self.conn, id, message) {
             eprintln!("Couldn't write the download log: {err}");
@@ -214,6 +300,7 @@ fn append(conn: &Connection, id: u64, message: &str) -> rusqlite::Result<usize> 
 fn same(a: &Download, b: &Download) -> bool {
     (&a.name, &a.url, a.kind, a.status, a.total_bytes, a.received_bytes, &a.folder, &a.format, &a.path)
         == (&b.name, &b.url, b.kind, b.status, b.total_bytes, b.received_bytes, &b.folder, &b.format, &b.path)
+        && (a.queue, a.position) == (b.queue, b.position)
         && (a.limit_kbps, &a.access) == (b.limit_kbps, &b.access)
 }
 
@@ -222,6 +309,7 @@ fn status_key(s: Status) -> &'static str {
         Status::Downloading => "downloading",
         Status::Paused => "paused",
         Status::Queued => "queued",
+        Status::Later => "later",
         Status::Completed => "completed",
         Status::Missing => "missing",
         Status::Failed => "failed",
@@ -232,6 +320,7 @@ fn status_from(s: &str) -> Status {
     match s {
         "downloading" => Status::Downloading,
         "paused" => Status::Paused,
+        "later" => Status::Later,
         "completed" => Status::Completed,
         "missing" => Status::Missing,
         "failed" => Status::Failed,
@@ -283,6 +372,8 @@ mod tests {
             speed_history: Vec::new(),
             limit_kbps: None,
             access: Default::default(),
+            queue: crate::queue::MAIN,
+            position: 0,
         }
     }
 
@@ -314,6 +405,49 @@ mod tests {
         assert_eq!((d.format.as_deref(), d.selector.as_deref(), d.bytes_per_sec), (Some("1080p"), Some("bv*"), 0));
         assert_eq!(reopened.next_id(), 3);
         // Windows won't delete a database that's still open.
+        drop((store, reopened));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn old_lists_join_main_and_queues_round_trip() {
+        let dir = std::env::temp_dir().join(format!("syphr-queues-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("downloads.db");
+        let _ = std::fs::remove_file(&path);
+        // A list saved before queues existed.
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(
+            "CREATE TABLE downloads (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, kind TEXT NOT NULL,
+                source TEXT NOT NULL, status TEXT NOT NULL, total_bytes INTEGER, received_bytes INTEGER NOT NULL,
+                folder TEXT NOT NULL, format TEXT, selector TEXT, file_name TEXT, path TEXT);
+             INSERT INTO downloads VALUES (7, 'a', 'u', 'video', 'direct', 'queued', NULL, 0, '~', NULL, NULL, NULL, NULL);",
+        )
+        .unwrap();
+        drop(old);
+
+        let mut store = Store::open(&path).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!((loaded[0].queue, loaded[0].position), (MAIN, 7));
+        let mut queues = store.load_queues().unwrap();
+        assert_eq!(queues, [Queue::new(MAIN, "Main")]);
+
+        queues.push(Queue {
+            start: NaiveTime::from_hms_opt(23, 30, 0),
+            date: NaiveDate::from_ymd_opt(2026, 12, 1),
+            days: 0b101,
+            max_concurrent: 2,
+            on_finish: Finish::Sleep,
+            ..Queue::new(2, "Night")
+        });
+        store.save_queues(&queues);
+        let mut later = download(8, Status::Later);
+        later.queue = 2;
+        store.sync(&[later]);
+        let mut reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.load_queues().unwrap(), queues);
+        let d = &reopened.load().unwrap()[0];
+        assert_eq!((d.id, d.status, d.queue), (8, Status::Later, 2));
         drop((store, reopened));
         std::fs::remove_dir_all(dir).unwrap();
     }
