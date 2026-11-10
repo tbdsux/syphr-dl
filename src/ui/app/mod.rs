@@ -15,8 +15,10 @@ use gpui_kit::*;
 
 use crate::download::{Download, Kind, Source, Status};
 use crate::engine::{Job, Request};
+use crate::instance::AddRequest;
+use crate::links;
 use crate::store::Store;
-use crate::ui::add_download::{AddDownload, AddEvent, kind_for};
+use crate::ui::add_download::{AddDownload, AddEvent, kind_for, unchecked_download};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
 
@@ -82,7 +84,10 @@ pub struct SyphrApp {
     store: Store,
     /// Open details windows by download id.
     details: HashMap<u64, AnyWindowHandle>,
+    /// The clipboard text last seen, so each copy is offered once.
+    last_clip: Option<String>,
     _pump: Task<()>,
+    _watch_clipboard: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -145,6 +150,14 @@ impl SyphrApp {
                 }
             }
         });
+        let watch_clipboard = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |this, cx| this.watch_clipboard(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let active = this.read_with(cx, |this, _| this.has_active()).unwrap_or(false);
@@ -164,7 +177,10 @@ impl SyphrApp {
             store,
             details: HashMap::new(),
             jobs: HashMap::new(),
+            // What was copied before launch isn't new.
+            last_clip: cx.read_from_clipboard().and_then(|item| item.text()),
             _pump: pump,
+            _watch_clipboard: watch_clipboard,
             filter: Filter::All,
             checked: BTreeSet::new(),
             anchor: None,
@@ -511,6 +527,60 @@ impl SyphrApp {
         })
     }
 
+    /// Offers a newly copied file or video link with a system notification (see `OFFER_TAG`). Copies made while a
+    /// Syphr window is in front are its own, such as Copy links or the link field, and are never offered.
+    fn watch_clipboard(&mut self, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        if text == self.last_clip {
+            return;
+        }
+        self.last_clip = text.clone();
+        let settings = AppSettings::get(cx);
+        if !settings.watch_clipboard || cx.active_window().is_some() {
+            return;
+        }
+        let Some(link) = text.and_then(|text| links::offered_link(&text, &settings.watch_types)) else { return };
+        cx.show_system_notification(SystemNotification {
+            tag: format!("{OFFER_TAG}{link}").into(),
+            title: "Download the copied link?".into(),
+            body: link.into(),
+            actions: vec![SystemNotificationAction { id: DOWNLOAD_ACTION.into(), label: "Download".into() }],
+        });
+    }
+
+    /// Adds links from outside the window: the command line, another launch, a `syphr://` link or a notification.
+    pub fn take_request(&mut self, request: AddRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let AddRequest { urls, dir, name, silent, queue_only } = request;
+        match urls.as_slice() {
+            _ if silent || queue_only => {
+                let folder = dir.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+                let status = if queue_only { Status::Paused } else { Status::Queued };
+                self.add_links(&urls, &folder, name.filter(|_| urls.len() == 1), status, cx);
+            }
+            [url] => self.add.update(cx, |add, cx| {
+                add.fill(url.clone(), dir, name, window, cx);
+                add.focus(window, cx);
+            }),
+            _ => {}
+        }
+    }
+
+    /// Adds `urls` without looking them up, the first one oldest so the queue runs them in order.
+    fn add_links(
+        &mut self,
+        urls: &[String],
+        folder: &str,
+        file_name: Option<String>,
+        status: Status,
+        cx: &mut Context<Self>,
+    ) {
+        for url in urls {
+            self.downloads.insert(0, unchecked_download(self.next_id, url, folder, file_name.clone(), status));
+            self.next_id += 1;
+        }
+        self.sync_table(cx);
+    }
+
     fn submit_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.add.read(cx).request(self.next_id, cx) {
             Ok(download) => {
@@ -525,6 +595,11 @@ impl SyphrApp {
         }
     }
 }
+
+/// Tags the clipboard watcher's notifications; the copied link follows it.
+pub const OFFER_TAG: &str = "add-link:";
+/// The offer's button that adds the link without opening the panel.
+pub const DOWNLOAD_ACTION: &str = "download";
 
 /// A toast while the window is in front, otherwise the system notification center.
 fn announce(id: u64, title: &'static str, body: SharedString, window: &mut Window, cx: &mut App) {

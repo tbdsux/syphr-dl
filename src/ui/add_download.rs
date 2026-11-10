@@ -16,6 +16,7 @@ use gpui_kit::*;
 use crate::download::{Download, Kind, Source, Status, format_bytes, format_duration};
 use crate::engine::ytdlp::{self, VideoInfo};
 use crate::engine::{self, LinkInfo};
+use crate::links::is_web_link;
 use crate::ui::settings::AppSettings;
 
 enum Lookup {
@@ -119,10 +120,28 @@ impl AddDownload {
         if !is_web_link(&link) {
             return false;
         }
+        self.fill(link, None, None, window, cx);
+        true
+    }
+
+    /// Puts `link` in the field, with an optional folder and file name, and opens the panel.
+    pub fn fill(
+        &mut self,
+        link: String,
+        folder: Option<String>,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.url.update(cx, |state, cx| state.set_value(link, window, cx));
+        if let Some(folder) = folder {
+            self.folder.update(cx, |state, cx| state.set_value(folder, window, cx));
+        }
+        if let Some(name) = name {
+            self.name.update(cx, |state, cx| state.set_value(name, window, cx));
+        }
         self.url_changed(cx);
         self.set_open(true, cx);
-        true
     }
 
     fn url_text(&self, cx: &App) -> String {
@@ -321,8 +340,34 @@ impl AddDownload {
     }
 }
 
-fn is_web_link(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://")) && url.len() > "https://".len()
+/// A download for a link added without the panel: no lookup, so name and size come once it starts.
+/// Video sites get yt-dlp's best quality.
+pub fn unchecked_download(id: u64, url: &str, folder: &str, file_name: Option<String>, status: Status) -> Download {
+    let media = ytdlp::handles(url);
+    let path = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+    // A video page's path says nothing; its title replaces the link once downloaded.
+    let guess = match path.rsplit('/').next() {
+        Some(name) if !media && !name.is_empty() && path.matches('/').count() > 2 => name,
+        _ => url,
+    };
+    Download {
+        id,
+        name: file_name.clone().unwrap_or_else(|| guess.to_string()).into(),
+        url: url.to_string().into(),
+        kind: if media { Kind::Video } else { kind_for(url) },
+        source: if media { Source::YtDlp } else { Source::Direct },
+        status,
+        total_bytes: None,
+        received_bytes: 0,
+        bytes_per_sec: 0,
+        folder: folder.to_string().into(),
+        format: media.then(|| "Best quality".into()),
+        selector: media.then(|| "bv*+ba/b".into()),
+        file_name,
+        path: None,
+        fragments: Vec::new(),
+        speed_history: Vec::new(),
+    }
 }
 
 pub fn kind_for(url: &str) -> Kind {
@@ -409,7 +454,7 @@ impl Render for AddDownload {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, is_web_link, kind_for};
+    use super::{Kind, Status, is_web_link, kind_for, unchecked_download};
 
     #[test]
     fn link_checks() {
@@ -418,5 +463,13 @@ mod tests {
         assert!(!is_web_link("ftp://a.com/x"));
         assert_eq!(kind_for("https://a.com/setup.dmg?token=1"), Kind::Program);
         assert_eq!(kind_for("https://a.com/song.MP3"), Kind::Music);
+        let d = unchecked_download(1, "https://a.com/files/x.zip?t=1", "~/D", None, Status::Queued);
+        assert_eq!((d.name.as_ref(), d.kind, d.selector), ("x.zip", Kind::Archive, None));
+        let d = unchecked_download(2, "https://www.youtube.com/watch?v=x", "~/D", None, Status::Paused);
+        assert_eq!((d.kind, d.selector.as_deref()), (Kind::Video, Some("bv*+ba/b")));
+        assert_eq!(
+            unchecked_download(3, "https://a.com/", "~/D", None, Status::Queued).name.as_ref(),
+            "https://a.com/"
+        );
     }
 }

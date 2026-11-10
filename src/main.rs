@@ -10,6 +10,8 @@ macro_rules! secondary {
 
 mod download;
 mod engine;
+mod instance;
+mod links;
 mod store;
 mod tools;
 mod tray;
@@ -131,9 +133,6 @@ fn main() {
         cx.on_action(|_: &SmallerText, cx| settings::AppSettings::step_font_size(cx, Some(-1.)));
         cx.on_action(|_: &ActualSize, cx| settings::AppSettings::step_font_size(cx, None));
 
-        // Clicking a download notification brings the window back, as the Dock icon does.
-        cx.on_system_notification_response(|_, cx| show_main_window(cx));
-
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(720.)), cx)),
             window_min_size: Some(size(px(880.), px(520.))),
@@ -142,6 +141,20 @@ fn main() {
         let (window, view) =
             gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::SyphrApp::new(window, cx)))
                 .expect("failed to open window");
+        // Clicking a download notification brings the window back, as the Dock icon does; a copied link's offer
+        // also opens the panel with it, or adds it straight away from its Download button.
+        let (offer_window, offer_view) = (window, view.clone());
+        cx.on_system_notification_response(move |response, cx| {
+            let Some(link) = response.tag.strip_prefix(app::OFFER_TAG) else { return show_main_window(cx) };
+            let silent = response.action_id.as_deref() == Some(app::DOWNLOAD_ACTION);
+            let request = instance::AddRequest { urls: vec![link.to_string()], silent, ..Default::default() };
+            if !silent {
+                show_main_window(cx);
+            }
+            offer_window
+                .update(cx, |_, window, cx| offer_view.update(cx, |this, cx| this.take_request(request, window, cx)))
+                .ok();
+        });
         tools::install_shipped(window, cx);
         tray::install(window, view, cx);
         cx.activate(true);
