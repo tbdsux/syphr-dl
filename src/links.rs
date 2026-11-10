@@ -1,4 +1,9 @@
-//! Turning text into download links.
+//! Turning text into download links: lists, wildcard patterns, and the links on a web page.
+
+use std::collections::HashSet;
+
+/// Most links one pattern may produce.
+pub const MAX_LINKS: usize = 10_000;
 
 /// File types the clipboard watcher looks for, until the user changes them.
 pub const DEFAULT_TYPES: &str = "3gp 7z aac apk appimage avi bz2 deb dmg epub exe flac gz iso m4a m4b m4v mkv mov mp3 \
@@ -6,6 +11,18 @@ pub const DEFAULT_TYPES: &str = "3gp 7z aac apk appimage avi bz2 deb dmg epub ex
 
 pub fn is_web_link(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://")) && url.len() > "https://".len()
+}
+
+/// The web links in `text`, one or more per line, in order and without repeats; lines starting with `#` are comments.
+pub fn parse_list(text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .filter(|word| is_web_link(word) && seen.insert(*word))
+        .map(String::from)
+        .collect()
 }
 
 /// The link a copied `text` holds, if it is one link to a video site or to a file of one of `types`.
@@ -32,9 +49,97 @@ pub fn has_type(url: &str, types: &str) -> bool {
     types.split([' ', ',']).map(|t| t.trim().trim_start_matches('.')).any(|t| t.eq_ignore_ascii_case(&ext))
 }
 
+/// Expands every `[1-50]`, `[001-120]` or `[a-z]` in `pattern` into one link per value; leading zeros pad.
+pub fn expand_pattern(pattern: &str) -> Result<Vec<String>, String> {
+    let mut out = vec![String::new()];
+    let mut ranges = 0;
+    let mut rest = pattern.trim();
+    while let Some(open) = rest.find('[') {
+        let (before, after) = rest.split_at(open);
+        out.iter_mut().for_each(|link| link.push_str(before));
+        match after.find(']').and_then(|close| Some((close, range(&after[1..close])?))) {
+            Some((close, values)) => {
+                let values = values?;
+                if out.len().saturating_mul(values.len()) > MAX_LINKS {
+                    return Err(format!("That makes more than {MAX_LINKS} links. Use a smaller range."));
+                }
+                out = out.iter().flat_map(|link| values.iter().map(move |v| format!("{link}{v}"))).collect();
+                ranges += 1;
+                rest = &after[close + 1..];
+            }
+            // Not a range, such as an IPv6 host: keep the bracket as typed.
+            None => {
+                out.iter_mut().for_each(|link| link.push('['));
+                rest = &after[1..];
+            }
+        }
+    }
+    out.iter_mut().for_each(|link| link.push_str(rest));
+    if ranges == 0 {
+        return Err("Add a range such as [1-50], [001-120] or [a-z] where the address changes.".into());
+    }
+    Ok(out)
+}
+
+/// The values of one `start-end` range, either way round, or None when it isn't one.
+fn range(inner: &str) -> Option<Result<Vec<String>, String>> {
+    let (a, b) = inner.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    if digits(a) && digits(b) {
+        let (x, y): (u64, u64) = (a.parse().ok()?, b.parse().ok()?);
+        if x.abs_diff(y) >= MAX_LINKS as u64 {
+            return Some(Err(format!("A range can make at most {MAX_LINKS} links.")));
+        }
+        let width = if a.len() > 1 && a.starts_with('0') { a.len() } else { 0 };
+        let values: Vec<u64> = if x <= y { (x..=y).collect() } else { (y..=x).rev().collect() };
+        return Some(Ok(values.into_iter().map(|n| format!("{n:0width$}")).collect()));
+    }
+    let letter = |s: &str| (s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic()).then(|| s.as_bytes()[0]);
+    let (x, y) = (letter(a)?, letter(b)?);
+    if x.is_ascii_lowercase() != y.is_ascii_lowercase() {
+        return None;
+    }
+    let values: Vec<u8> = if x <= y { (x..=y).collect() } else { (y..=x).rev().collect() };
+    Some(Ok(values.into_iter().map(|c| char::from(c).to_string()).collect()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expands_patterns() {
+        assert_eq!(
+            expand_pattern("https://x/img[1-3].jpg").unwrap(),
+            ["https://x/img1.jpg", "https://x/img2.jpg", "https://x/img3.jpg"]
+        );
+        let padded = expand_pattern("https://x/img[001-120].jpg").unwrap();
+        assert_eq!(
+            (padded.len(), padded[0].as_str(), padded[119].as_str()),
+            (120, "https://x/img001.jpg", "https://x/img120.jpg")
+        );
+        assert_eq!(expand_pattern("https://x/[a-c]").unwrap(), ["https://x/a", "https://x/b", "https://x/c"]);
+        assert_eq!(expand_pattern("https://x/[C-A]").unwrap(), ["https://x/C", "https://x/B", "https://x/A"]);
+        assert_eq!(
+            expand_pattern("https://x/[1-2]/[a-b]").unwrap(),
+            ["https://x/1/a", "https://x/1/b", "https://x/2/a", "https://x/2/b"]
+        );
+        // Brackets that aren't ranges stay as typed.
+        assert_eq!(expand_pattern("http://[::1]/f[8-9]").unwrap(), ["http://[::1]/f8", "http://[::1]/f9"]);
+        assert!(expand_pattern("https://x/[a-Z]").is_err());
+        assert!(expand_pattern("https://x/file.zip").is_err());
+        assert!(expand_pattern("https://x/[1-20000]").is_err());
+        assert!(expand_pattern("https://x/[1-200]/[1-200]").is_err());
+        assert!(expand_pattern("https://x/[1-99999999999999999999999]").is_err());
+    }
+
+    #[test]
+    fn parses_link_lists() {
+        let text = "# my links\nhttps://a.com/1.zip\n\n  https://a.com/2.zip  not-a-link https://a.com/3.zip\n\
+                    #https://a.com/skipped.zip\nftp://a.com/x\nhttps://a.com/1.zip\n";
+        assert_eq!(parse_list(text), ["https://a.com/1.zip", "https://a.com/2.zip", "https://a.com/3.zip"]);
+        assert!(parse_list("").is_empty());
+    }
 
     #[test]
     fn matches_types() {

@@ -29,6 +29,7 @@ actions!(
     syphr,
     [
         NewDownload,
+        BatchDownload,
         OpenSettings,
         Quit,
         CloseWindow,
@@ -289,6 +290,7 @@ fn menus() -> Vec<Menu> {
         return vec![
             Menu::new("File").items([
                 MenuItem::action("New Download…", NewDownload),
+                MenuItem::action("Batch Download…", BatchDownload),
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", CloseWindow),
@@ -312,6 +314,7 @@ fn menus() -> Vec<Menu> {
         ]),
         Menu::new("File").items([
             MenuItem::action("New Download…", NewDownload),
+            MenuItem::action("Batch Download…", BatchDownload),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),

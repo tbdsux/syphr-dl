@@ -19,6 +19,7 @@ use crate::instance::AddRequest;
 use crate::links;
 use crate::store::Store;
 use crate::ui::add_download::{AddDownload, AddEvent, kind_for, unchecked_download};
+use crate::ui::batch::{BatchAdd, BatchKind, BatchSubmit};
 use crate::ui::downloads_table::DownloadsTable;
 use crate::ui::settings::AppSettings;
 
@@ -88,6 +89,8 @@ pub struct SyphrApp {
     last_clip: Option<String>,
     _pump: Task<()>,
     _watch_clipboard: Task<()>,
+    /// Listens to the open batch dialog.
+    _batch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -181,6 +184,7 @@ impl SyphrApp {
             last_clip: cx.read_from_clipboard().and_then(|item| item.text()),
             _pump: pump,
             _watch_clipboard: watch_clipboard,
+            _batch: None,
             filter: Filter::All,
             checked: BTreeSet::new(),
             anchor: None,
@@ -518,6 +522,13 @@ impl SyphrApp {
 
     pub fn new_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let auto_paste = AppSettings::get(cx).auto_paste;
+        if auto_paste && self.add.read(cx).url().read(cx).value().is_empty() {
+            let copied = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+            let links = links::parse_list(&copied);
+            if links.len() > 1 {
+                return self.open_batch(BatchKind::List, links, None, window, cx);
+            }
+        }
         self.add.update(cx, |add, cx| {
             if auto_paste && add.url().read(cx).value().is_empty() {
                 add.paste_copied_link(window, cx);
@@ -552,6 +563,7 @@ impl SyphrApp {
     pub fn take_request(&mut self, request: AddRequest, window: &mut Window, cx: &mut Context<Self>) {
         let AddRequest { urls, dir, name, silent, queue_only } = request;
         match urls.as_slice() {
+            [] => {}
             _ if silent || queue_only => {
                 let folder = dir.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
                 let status = if queue_only { Status::Paused } else { Status::Queued };
@@ -561,8 +573,28 @@ impl SyphrApp {
                 add.fill(url.clone(), dir, name, window, cx);
                 add.focus(window, cx);
             }),
-            _ => {}
+            _ => self.open_batch(BatchKind::List, urls, dir, window, cx),
         }
+    }
+
+    /// Opens the batch dialog; `folder` defaults to the one in Settings.
+    pub fn open_batch(
+        &mut self,
+        kind: BatchKind,
+        links: Vec<String>,
+        folder: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = folder.unwrap_or_else(|| AppSettings::get(cx).download_dir.clone());
+        let view = cx.new(|cx| BatchAdd::new(kind, links, folder, window, cx));
+        self._batch = Some(cx.subscribe_in(&view, window, |this, _, BatchSubmit { urls, folder }, window, cx| {
+            this.add_links(urls, folder, None, Status::Queued, cx);
+            window.close_dialog(cx);
+        }));
+        window.open_dialog(cx, move |dialog, window, _| {
+            dialog.title(kind.title()).w(window.rem_size() * 40.).child(view.clone())
+        });
     }
 
     /// Adds `urls` without looking them up, the first one oldest so the queue runs them in order.
