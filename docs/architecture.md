@@ -80,7 +80,7 @@ Until a column is resized, Name fills the table. After that, the Actions column 
 
 ## Queues and the scheduler
 
-Every download belongs to one queue (`Download::queue`). *Main* (id 1) always exists and can't be deleted; the sidebar's *Queues* section lists it with the queues the user adds (+), and selecting one shows only its downloads, in the order they start (`Download::position`, lower first). There the toolbar offers *Start queue* (`Later` and `Paused` → `Queued`), *Stop queue* (`Downloading` and `Queued` → `Later`) and *Schedule…*, and a row's menu offers *Move up / down / to top / to bottom*. *Move to queue* is in every row's menu and puts the download last in the other queue.
+Every download belongs to one queue (`Download::queue`). *Main* (id 1) always exists and can't be deleted; the sidebar's *Queues* section lists it with the queues the user adds (+), and selecting one shows only its downloads, in the order they start (`Download::position`, lower first). There the toolbar offers *Start queue* (`Later` and `Paused` → `Queued`), *Stop queue* (`Downloading` and `Queued` → `Later`) and *Schedule…*, and a row's menu offers *Move up / down / to top / to bottom*. *Move to queue* is in every row's menu and puts the download last in the other queue. Right-clicking a queue in the sidebar offers *Start queue*, *Stop queue*, *Edit…* (the Queues window) and, for any queue but Main, *Delete…*.
 
 *Schedule…* opens the Queues window, one page per queue: name, start and stop times, the days they apply to (or one date), how many of its downloads run at once (0 follows *Simultaneous downloads*, which still caps all queues together), and what to do when it finishes. Deleting a queue moves its downloads to Main.
 
