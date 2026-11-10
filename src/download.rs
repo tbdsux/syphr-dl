@@ -11,6 +11,8 @@ pub enum Status {
     Downloading,
     Paused,
     Queued,
+    /// Waits in its queue until the queue starts, by hand or on schedule.
+    Later,
     Completed,
     /// Completed, but the file is no longer where it was saved.
     Missing,
@@ -57,6 +59,10 @@ pub struct Download {
     pub fragments: Vec<f32>,
     /// Recent speeds in bytes per second, oldest first; not saved, so empty after a restart.
     pub speed_history: Vec<u64>,
+    /// The `Queue` it belongs to.
+    pub queue: u64,
+    /// Lower starts first; see `queue::reorder`.
+    pub position: i64,
 }
 
 impl Download {
@@ -130,6 +136,8 @@ mod tests {
             path: None,
             fragments: Vec::new(),
             speed_history: Vec::new(),
+            queue: crate::queue::MAIN,
+            position: 1,
         };
         assert!((d.progress() - 64.58).abs() < 0.1);
         assert_eq!(d.eta_secs(), Some(4));
