@@ -38,6 +38,8 @@ pub struct AppSettings {
     pub total_limit_kbps: f64,
     /// Parallel connections per download: byte-range parts for direct links, `-N` for yt-dlp.
     pub fragments: f64,
+    /// Direct-download connections to one server across all downloads; 0 means no limit.
+    pub per_server: f64,
     /// URL scheme of the proxy for all of Syphr's traffic, or `PROXY_NONE`.
     pub proxy_type: String,
     pub proxy_host: String,
@@ -87,6 +89,7 @@ impl Default for AppSettings {
             speed_limit_kbps: 0.,
             total_limit_kbps: 0.,
             fragments: 8.,
+            per_server: 0.,
             proxy_type: PROXY_NONE.into(),
             proxy_host: String::new(),
             proxy_port: 8080.,
@@ -590,6 +593,16 @@ impl Render for SettingsView {
                 .description(
                     "Parts fetched at once. Servers without range support always use one. Applies to new downloads.",
                 ),
+                SettingItem::new(
+                    "Connections per server",
+                    SettingField::number_input(
+                        number(0., 64., 1.),
+                        |cx: &App| AppSettings::get(cx).per_server,
+                        |value: f64, cx: &mut App| AppSettings::update(cx, |s| s.per_server = value),
+                    )
+                    .default_value(defaults.per_server),
+                )
+                .description("Counts every download's connections to the same site. 0 means no limit."),
                 SettingItem::new(
                     "Notify when a download finishes",
                     SettingField::switch(

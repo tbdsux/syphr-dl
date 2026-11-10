@@ -108,6 +108,66 @@ pub fn set_total_limit(bps: u64) {
     TOTAL_LIMIT.set(bps);
 }
 
+/// Connections allowed to one server (host and port) across all direct downloads; 0 means no limit.
+static PER_SERVER: AtomicU64 = AtomicU64::new(0);
+/// Open part connections by server.
+static SERVERS: LazyLock<Mutex<std::collections::HashMap<String, u64>>> = LazyLock::new(Default::default);
+
+/// Applies to connections opened from now on; open ones keep going.
+pub fn set_per_server_limit(connections: u64) {
+    PER_SERVER.store(connections, Relaxed);
+}
+
+/// A connection counted against its server until dropped.
+struct ServerSlot(String);
+
+impl ServerSlot {
+    fn server(url: &str) -> String {
+        reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?)))
+            .unwrap_or_default()
+    }
+
+    fn has_room(url: &str) -> bool {
+        let limit = PER_SERVER.load(Relaxed);
+        limit == 0 || SERVERS.lock().unwrap().get(&Self::server(url)).copied().unwrap_or(0) < limit
+    }
+
+    fn try_take(url: &str) -> Option<Self> {
+        let server = Self::server(url);
+        let limit = PER_SERVER.load(Relaxed);
+        let mut servers = SERVERS.lock().unwrap();
+        let open = servers.entry(server.clone()).or_default();
+        (limit == 0 || *open < limit).then(|| {
+            *open += 1;
+            Self(server)
+        })
+    }
+
+    /// shortcut: polls four times a second instead of queueing waiters; fine for a handful of connections.
+    async fn take(url: &str) -> Self {
+        loop {
+            if let Some(slot) = Self::try_take(url) {
+                return slot;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+}
+
+impl Drop for ServerSlot {
+    fn drop(&mut self) {
+        let mut servers = SERVERS.lock().unwrap();
+        if let Some(open) = servers.get_mut(&self.0) {
+            *open -= 1;
+            if *open == 0 {
+                servers.remove(&self.0);
+            }
+        }
+    }
+}
+
 /// Saved logins as (site, username, password); a site also covers its subdomains.
 static SITE_LOGINS: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new());
 
@@ -648,6 +708,31 @@ mod offline {
             assert!(headers.contains("cookie: session=1"), "{headers}");
             assert!(headers.contains("user-agent: test/1"), "{headers}");
         }
+    }
+
+    #[test]
+    fn limits_connections_per_server() {
+        let total = 4 * 1024 * 1024;
+        let served = serve(total, Some(u64::MAX));
+        // Global, but the other offline tests use their own servers and at most two connections each.
+        set_per_server_limit(3);
+        let mut jobs: Vec<Job> = (0..2).map(|_| Job::default()).collect();
+        for (i, job) in jobs.iter_mut().enumerate() {
+            job.start(Request { fragments: 4, ..request(u64::MAX - 20 - i as u64, &served.url) });
+        }
+        let server = ServerSlot::server(&served.url);
+        let (mut peak, mut paths) = (0, Vec::new());
+        while paths.len() < 2 {
+            std::thread::sleep(Duration::from_millis(5));
+            peak = peak.max(SERVERS.lock().unwrap().get(&server).copied().unwrap_or(0));
+            paths.extend(jobs.iter_mut().filter_map(|job| job.take_result()).map(Result::unwrap));
+        }
+        set_per_server_limit(0);
+        assert_eq!(peak, 3);
+        for path in paths {
+            assert_content(&path, total);
+        }
+        assert!(SERVERS.lock().unwrap().is_empty(), "every slot was given back");
     }
 
     #[test]

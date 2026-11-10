@@ -377,6 +377,7 @@ impl SyphrApp {
         let default_kbps = settings.speed_limit_kbps.max(0.) as u64;
         let total_bps = settings.total_limit_kbps.max(0.) as u64 * 1024;
         crate::engine::set_total_limit(total_bps);
+        crate::engine::set_per_server_limit(settings.per_server.max(0.) as u64);
         let fragments = settings.fragments.max(1.) as u64;
         let (bin, ffmpeg, notify) = (
             crate::tools::resolve(&settings.ytdlp_path),

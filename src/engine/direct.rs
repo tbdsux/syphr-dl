@@ -12,7 +12,7 @@ use reqwest::{StatusCode, header};
 use tokio::task::JoinSet;
 
 use super::names::{chosen_name, file_name_of, move_file, part_path, response_file_name, unique_path};
-use super::{Access, Layout, Part, Request, Shared, TOTAL_LIMIT, err};
+use super::{Access, Layout, Part, Request, ServerSlot, Shared, TOTAL_LIMIT, err};
 
 const MIN_PART_BYTES: u64 = 1024 * 1024;
 const RETRIES: u32 = 5;
@@ -49,7 +49,9 @@ pub(super) async fn run_direct(request: &Request, shared: &Arc<Shared>) -> Resul
     }
     loop {
         // Free connections take half of the biggest rest, so the end of the file doesn't run on one connection.
+        // A new part only helps if its server takes another connection now.
         while set.len() < connections
+            && ServerSlot::has_room(&request.url)
             && let Some((from, i, part)) = layout.split_largest()
         {
             shared.log(format!("Part {}: takes bytes {}–{} from part {}", i + 1, part.start, part.end(), from + 1));
@@ -214,6 +216,13 @@ async fn fetch_part(
     part: &Part,
     shared: &Shared,
 ) -> Result<(), String> {
+    let _slot = match ServerSlot::try_take(&request.url) {
+        Some(slot) => slot,
+        None => {
+            shared.log(format!("Part {}: waiting for a free connection to the server", i + 1));
+            ServerSlot::take(&request.url).await
+        }
+    };
     if !ranged {
         // No ranges: the only way to continue is from the start.
         part.done.store(0, Relaxed);
@@ -369,7 +378,8 @@ pub(super) mod server {
     }
 
     /// Serves `total` bytes of `byte(i)` with ranges. `slow` gets the first connection that starts at that offset
-    /// (other than the one-byte probe) throttled to about 1 MiB/s. Each connection closes after one request.
+    /// (other than the one-byte probe) throttled to about 1 MiB/s; `u64::MAX` throttles every one. Each connection
+    /// closes after one request.
     pub fn serve(total: u64, slow: Option<u64>) -> Served {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
@@ -392,8 +402,8 @@ pub(super) mod server {
                     None => (0, total - 1),
                 };
                 // Not the one-byte probe.
-                let throttle = slow == Some(from) && to > from;
-                if throttle {
+                let throttle = (slow == Some(from) || slow == Some(u64::MAX)) && to > from;
+                if throttle && slow != Some(u64::MAX) {
                     slow = None;
                 }
                 std::thread::spawn(move || {
